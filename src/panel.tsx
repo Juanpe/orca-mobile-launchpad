@@ -358,9 +358,12 @@ function OtherRunCard({ other, canNavigate }: { other: OtherRun; canNavigate: bo
   return (
     <Box border={phase.tone === 'neutral' ? true : phase.tone} radius="md" padding="sm" gap="xs">
       <Row justify="between" align="center" gap="xs">
-        <Text weight="semibold" truncate>
-          {run.scheme ?? workspace.name}
-        </Text>
+        <Row gap="xs" align="center">
+          <Text weight="semibold" truncate>
+            {run.scheme ?? workspace.name}
+          </Text>
+          {run.platform ? <Badge>{run.platform === 'ios' ? '🍏 iOS' : '🤖 Android'}</Badge> : null}
+        </Row>
         <Badge tone={phase.tone}>{phase.label}</Badge>
       </Row>
       <Text muted size="xs" truncate>

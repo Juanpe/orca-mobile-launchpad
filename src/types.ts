@@ -84,6 +84,8 @@ export type RunState = {
   outPath?: string
   destinationName?: string
   scheme?: string
+  /** Which app ran: older saved runs lack it. */
+  platform?: Platform
 }
 
 export type WorkspaceInfo = {

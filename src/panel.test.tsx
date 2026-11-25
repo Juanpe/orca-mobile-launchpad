@@ -156,7 +156,7 @@ test('runs in other worktrees stay visible, with progress, navigation and stop',
     otherRuns: [
       {
         workspace: { id: 'ws-2', name: 'parity-kitchen', branch: 'feature/kitchen', path: '/w2' },
-        run: { phase: 'building', scheme: 'Waiter', destinationName: 'iPhone 18 Pro', startedAt: 1, phaseStartedAt: Date.now(), terminalId: 't-2' }
+        run: { phase: 'building', scheme: 'Waiter', platform: 'android', destinationName: 'Pixel 9', startedAt: 1, phaseStartedAt: Date.now(), terminalId: 't-2' }
       }
     ]
   }
@@ -180,6 +180,7 @@ test('runs in other worktrees stay visible, with progress, navigation and stop',
   assert.match(summary, /No mobile app here/)
   assert.ok(view.find({ type: 'Heading', text: 'Other worktrees · 1' }))
   assert.ok(view.find({ type: 'Progress' }))
+  assert.ok(view.find({ type: 'Badge', text: '🤖 Android' }))
   await view.press({ type: 'Button', text: 'Terminal' })
   assert.deepEqual(shows, [{ path: '/w2', terminal: true }])
   await view.press({ type: 'Button', text: 'Stop' })

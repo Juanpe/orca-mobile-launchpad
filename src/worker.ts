@@ -285,8 +285,11 @@ export default function activate(orca: OrcaWorkerApi): void {
   /** Brings back the runs of an earlier worker: those still alive resume, the rest get their last phase. */
   async function restoreRuns(): Promise<void> {
     const stored = (await orca.storage.get(RUNS_KEY).catch(() => null)) as { path: string; run: RunState; workspace: WorkspaceInfo }[] | null
-    for (const { path, run, workspace } of stored ?? []) {
+    for (const { path, run: saved, workspace } of stored ?? []) {
       if (runs.has(path)) continue
+      // Runs saved before 0.7.2 lack their platform: the worktree's chosen project tells it.
+      const project = saved.platform ? undefined : (await readConfig(path)).project
+      const run: RunState = project ? { ...saved, platform: platformOf(project) } : saved
       runWorkspaces.set(path, workspace)
       const statusFile = await fileFor(path, 'status')
       const ongoing = isActive(run.phase) || run.phase === 'running'
@@ -512,6 +515,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       pid,
       terminalId,
       scheme: displayTarget(config.scheme!, projects.find((p) => p.path === config.project)),
+      platform: platformOf(config.project, projects),
       destinationName: config.destination!.name
     })
     startPolling(workspace, statusFile)
