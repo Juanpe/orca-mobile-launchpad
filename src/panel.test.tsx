@@ -219,6 +219,7 @@ test('the destination chip folds the picker; picking a device folds it too', asy
   assert.ok(view.find({ type: 'Tabs' }), 'the picker starts open')
   await view.select({ type: 'Tabs' }, 'devices')
   await view.press({ type: 'ListItem', label: /Wifi iPhone/ })
+  assert.deepEqual(view.errors, [])
   assert.equal(view.find({ type: 'Tabs' }), null, 'picking closes it')
   await view.press({ type: 'Button', text: /▾$/ })
   assert.ok(view.find({ type: 'Tabs' }), 'the chip opens it again')

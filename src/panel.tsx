@@ -478,19 +478,29 @@ function choose(device: Device): void {
 }
 
 function DeviceList({ label, items, selected }: { label: string; items: Device[]; selected?: string }) {
+  const row = (d: Device) => (
+    <ListItem
+      title={d.name}
+      description={deviceDescription(d)}
+      icon={deviceIcon(d)}
+      disabled={d.state === 'unavailable'}
+      onPress={() => choose(d)}
+    />
+  )
+  // The chosen row sits in an accent-tinted Box instead of ListItem's grey `current` fill. A List
+  // holds only ListItems, so the list splits around it: rows before, the chosen one, rows after.
+  const at = items.findIndex((d) => d.udid === selected)
+  if (at < 0) return <List label={label}>{items.map(row)}</List>
+  const before = items.slice(0, at)
+  const after = items.slice(at + 1)
   return (
-    <List label={label}>
-      {items.map((d) => (
-        <ListItem
-          title={d.name}
-          description={deviceDescription(d)}
-          icon={deviceIcon(d)}
-          current={d.udid === selected}
-          disabled={d.state === 'unavailable'}
-          onPress={() => choose(d)}
-        />
-      ))}
-    </List>
+    <Stack gap="none">
+      {before.length ? <List label={label}>{before.map(row)}</List> : null}
+      <Box background="accent" radius="md">
+        <List label={before.length ? `${label}, selected` : label}>{row(items[at]!)}</List>
+      </Box>
+      {after.length ? <List label={`${label}, more`}>{after.map(row)}</List> : null}
+    </Stack>
   )
 }
 
