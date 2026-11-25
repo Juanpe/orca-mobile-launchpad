@@ -30,6 +30,7 @@ import {
   type PanelContext
 } from 'orca'
 import './protocol'
+import { preferredScheme } from './platforms/ios-parse'
 import {
   isActive,
   worktreeSimulatorName,
@@ -45,6 +46,13 @@ const schemes = atom<string[] | null>(null)
 const appSchemes = atom<string[]>([])
 /** Advances while a run is in progress: drives the panel's animations. */
 const tick = atom(0)
+
+/** The scheme the worker runs when none is chosen, once the schemes are known. */
+function autoScheme(s: LaunchpadState): string | undefined {
+  const list = read(schemes)
+  if (!list || !s.config.project) return undefined
+  return preferredScheme(list, s.config.project, read(appSchemes))
+}
 const schemesError = atom<string | undefined>(undefined)
 const devices = atom<Device[] | null>(null)
 const devicesError = atom<string | undefined>(undefined)
@@ -213,7 +221,8 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
   const device = read(devices)?.find((d) => d.udid === destination?.udid)
   const project = s.projects.find((p) => p.path === s.config.project) ?? s.projects[0]
   const projectName = project?.label.split('/').pop()?.replace(/\.(xcworkspace|xcodeproj)$/, '')
-  const title = s.config.scheme ?? projectName ?? 'App'
+  // Without a chosen scheme, the worker runs the first app scheme: name it.
+  const title = s.config.scheme ?? autoScheme(s) ?? projectName ?? 'App'
   // The branch says which worktree this is; fall back to the worktree's name without one.
   const branch = s.workspace?.branch ? `⎇ ${s.workspace.branch}` : s.workspace?.name ?? ''
   const destinationTitle = destination?.name ?? 'Automatic destination'
@@ -596,7 +605,7 @@ function BuildSettings({ s }: { s: LaunchpadState }) {
   return (
     <Collapsible
       title="Build"
-      description={`${project.label} · ${s.config.scheme ?? 'automatic scheme'} · ${s.config.configuration}`}
+      description={`${project.label} · ${s.config.scheme ?? (autoScheme(s) ? `${autoScheme(s)} (auto)` : 'automatic scheme')} · ${s.config.configuration}`}
     >
       <Stack gap="sm">
         {s.projects.length > 1 ? (
