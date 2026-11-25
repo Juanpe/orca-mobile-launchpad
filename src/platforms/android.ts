@@ -177,7 +177,12 @@ shift 9
 JDK="$1"
 : > "$LOG"
 export ANDROID_HOME="$SDK"
+STUDIO_JDK="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+if [ -z "$JAVA_HOME" ] && [ -z "$JDK" ] && [ -d "$STUDIO_JDK" ]; then JDK="$STUDIO_JDK"; fi
 if [ -z "$JAVA_HOME" ] && [ -n "$JDK" ]; then export JAVA_HOME="$JDK"; fi
+if [ -z "$JAVA_HOME" ] && ! /usr/libexec/java_home > /dev/null 2>&1; then
+  printf '✗ No Java found: install Android Studio, or set JAVA_HOME\n' >> "$LOG"; printf 'failed:No Java found (install Android Studio, or set JAVA_HOME)\n' > "$STATUS"; exit 1
+fi
 ADB="$SDK/platform-tools/adb"
 PKG=""
 
