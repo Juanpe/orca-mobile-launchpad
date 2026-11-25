@@ -316,7 +316,7 @@ async function addAndroid(root: string): Promise<string> {
   const dir = join(root, 'android')
   await mkdir(join(dir, 'app'), { recursive: true })
   await mkdir(join(dir, 'core'), { recursive: true })
-  await writeFile(join(dir, 'settings.gradle.kts'), 'rootProject.name = "Qamarero"\ninclude(":app")\ninclude(":core")\n')
+  await writeFile(join(dir, 'settings.gradle.kts'), 'rootProject.name = "Brewlog"\ninclude(":app")\ninclude(":core")\n')
   await writeFile(
     join(dir, 'app/build.gradle.kts'),
     'plugins { alias(libs.plugins.android.application) }\nandroid {\n  buildTypes {\n    release { }\n    create("internal") { }\n  }\n}\n'
@@ -333,7 +333,7 @@ test('a worktree with iOS and Android: switching platform resets variant and des
     const worker = await mountWorker(main, { host, events: ['workspace.changed'], commands: ['launchpad.run', 'launchpad.stop'] })
     let s = await worker.request('state.get')
     // iOS projects first; the Gradle build last, named by rootProject.name.
-    assert.deepEqual(s.projects.at(-1), { platform: 'android', kind: 'gradle', path: android, label: 'android', name: 'Qamarero' })
+    assert.deepEqual(s.projects.at(-1), { platform: 'android', kind: 'gradle', path: android, label: 'android', name: 'Brewlog' })
     assert.equal(s.projects[0]!.platform, 'ios')
     assert.ok(s.projects.some((p) => p.platform === 'android' && p.path === android))
     await worker.request('config.update', {
@@ -355,7 +355,7 @@ test('a worktree with iOS and Android: switching platform resets variant and des
     await until(async () => (await readdir(join(process.env.MOBILE_LAUNCHPAD_WORKDIR!, 'requests'))).includes('.alive'))
     const run = await launchpad(root, 'run', '--android', '--no-wait', '--configuration', 'internal')
     assert.equal(run.code, 0, run.out)
-    assert.match(run.out, /▸ Qamarero \(internal\) → Pixel 9/)
+    assert.match(run.out, /▸ Brewlog \(internal\) → Pixel 9/)
     s = await worker.request('state.get')
     assert.equal(s.run.phase, 'preparing')
     assert.equal(s.config.scheme, ':app')

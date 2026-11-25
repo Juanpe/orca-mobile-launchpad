@@ -156,7 +156,7 @@ test('runs in other worktrees stay visible, with progress, navigation and stop',
     otherRuns: [
       {
         workspace: { id: 'ws-2', name: 'parity-kitchen', branch: 'feature/kitchen', path: '/w2' },
-        run: { phase: 'building', scheme: 'Waiter', platform: 'android', destinationName: 'Pixel 9', startedAt: 1, phaseStartedAt: Date.now(), terminalId: 't-2' }
+        run: { phase: 'building', scheme: 'Barista', platform: 'android', destinationName: 'Pixel 9', startedAt: 1, phaseStartedAt: Date.now(), terminalId: 't-2' }
       }
     ]
   }

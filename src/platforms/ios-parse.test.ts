@@ -66,7 +66,7 @@ test('schemes: tolerates warnings before the JSON', () => {
 
 test('preferred scheme: named like the project, else not a test scheme', () => {
   assert.equal(preferredScheme(['AppTests', 'App'], '/x/App.xcworkspace'), 'App')
-  assert.equal(preferredScheme(['CoreTests', 'Qamarero', 'Pkg-Package'], '/x/Other.xcodeproj'), 'Qamarero')
+  assert.equal(preferredScheme(['CoreTests', 'Brewlog', 'Pkg-Package'], '/x/Other.xcodeproj'), 'Brewlog')
 })
 
 test('preferred destination: worktree simulator, then booted iPhone, then newest iPhone', () => {
@@ -84,14 +84,14 @@ test('compareVersions', () => {
 
 test('preferred scheme: an app scheme beats a package scheme', () => {
   assert.equal(
-    preferredScheme(['QamareroAPI', 'QamareroWaiter', 'QamareroWaiterApp'], '/x/Qamarero.xcworkspace', ['QamareroWaiter']),
-    'QamareroWaiter'
+    preferredScheme(['BrewlogAPI', 'BrewlogBarista', 'BrewlogBaristaApp'], '/x/Brewlog.xcworkspace', ['BrewlogBarista']),
+    'BrewlogBarista'
   )
 })
 
 test('schemeBuildsApp reads BuildableName', () => {
-  assert.equal(schemeBuildsApp('<BuildableReference BuildableName = "Waiter.app" />'), true)
-  assert.equal(schemeBuildsApp('<BuildableReference BuildableName = "QamareroAPI" />'), false)
+  assert.equal(schemeBuildsApp('<BuildableReference BuildableName = "Barista.app" />'), true)
+  assert.equal(schemeBuildsApp('<BuildableReference BuildableName = "BrewlogAPI" />'), false)
 })
 
 test('build errors: compiler errors, shortened paths, no duplicates', () => {
@@ -113,17 +113,17 @@ test('log tail keeps whole lines within the limit', () => {
 })
 
 test('crash summary: exception, reason and the crashed thread', () => {
-  const header = JSON.stringify({ app_name: 'Waiter', timestamp: 'now' })
+  const header = JSON.stringify({ app_name: 'Barista', timestamp: 'now' })
   const body = JSON.stringify({
     exception: { type: 'EXC_BREAKPOINT', signal: 'SIGTRAP' },
     asi: { libswiftCore: ['Fatal error: Index out of range'] },
     faultingThread: 1,
     threads: [{ frames: [] }, { queue: 'com.apple.main-thread', frames: [{ symbol: 'CartView.total', imageIndex: 0 }] }],
-    usedImages: [{ name: 'Waiter' }]
+    usedImages: [{ name: 'Barista' }]
   })
   const { title, summary } = summarizeCrash(`${header}\n${body}`)
   assert.equal(title, 'EXC_BREAKPOINT (SIGTRAP)')
   assert.match(summary, /Fatal error: Index out of range/)
   assert.match(summary, /Thread 1 crashed \(com.apple.main-thread\)/)
-  assert.match(summary, /Waiter\s+CartView.total/)
+  assert.match(summary, /Barista\s+CartView.total/)
 })

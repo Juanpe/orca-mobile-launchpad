@@ -224,7 +224,7 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
   const platforms = Array.from(new Set(s.projects.map((p) => p.platform)))
   // The branch says which worktree this is; fall back to the worktree's name without one.
   const branch = s.workspace?.branch ? `⎇ ${s.workspace.branch}` : s.workspace?.name ?? ''
-  // "Juanpe’s iPhone 18 Pro" → "iPhone 18 Pro": the chip is narrow.
+  // "Alex’s iPhone 18 Pro" → "iPhone 18 Pro": the chip is narrow.
   const shortName = destination?.name.replace(/^.*?[’']s\s+/, '')
   const how = !destination
     ? undefined

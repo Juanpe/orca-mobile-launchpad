@@ -34,7 +34,7 @@ ZY22XYZ                unauthorized usb:1-2 transport_id:3
 })
 
 test('Gradle: included modules, app modules and variants (Kotlin and Groovy DSL)', () => {
-  assert.deepEqual(parseIncludedModules('include(":app")\ninclude(":waiter", ":api")\ninclude \':core\'\n// include(":old")\n'), [':app', ':waiter', ':api', ':core'])
+  assert.deepEqual(parseIncludedModules('include(":app")\ninclude(":orders", ":api")\ninclude \':core\'\n// include(":old")\n'), [':app', ':orders', ':api', ':core'])
   assert.ok(isAppModule('plugins {\n    alias(libs.plugins.android.application)\n}'))
   assert.ok(isAppModule("apply plugin: 'com.android.application'"))
   assert.ok(!isAppModule('plugins { id("com.android.library") }'))
@@ -77,25 +77,25 @@ test('default Android destination: running emulator, connected phone, then any e
 test('crash buffer and Gradle failures read like the iOS ones', () => {
   const crash = `--------- beginning of crash
 11-25 12:40:01.123  4321  4321 E AndroidRuntime: FATAL EXCEPTION: main
-11-25 12:40:01.123  4321  4321 E AndroidRuntime: Process: com.qamarero.waiter, PID: 4321
+11-25 12:40:01.123  4321  4321 E AndroidRuntime: Process: com.example.brewlog, PID: 4321
 11-25 12:40:01.123  4321  4321 E AndroidRuntime: java.lang.IllegalStateException: Menu not loaded
-11-25 12:40:01.123  4321  4321 E AndroidRuntime: \tat com.qamarero.waiter.MenuCatalog.load(MenuCatalog.kt:42)
+11-25 12:40:01.123  4321  4321 E AndroidRuntime: \tat com.example.brewlog.MenuCatalog.load(MenuCatalog.kt:42)
 `
   const { title, summary } = summarizeAndroidCrash(crash)
   assert.equal(title, 'java.lang.IllegalStateException: Menu not loaded')
-  assert.match(summary, /^FATAL EXCEPTION: main\nProcess: com\.qamarero\.waiter/)
+  assert.match(summary, /^FATAL EXCEPTION: main\nProcess: com\.example\.brewlog/)
   const log = `> Task :app:preBuild UP-TO-DATE
-> Task :waiter:compileDebugKotlin FAILED
-e: file:///Users/me/w/android/waiter/src/main/kotlin/MenuCatalog.kt:42:13 Unresolved reference 'subcategory'.
+> Task :orders:compileDebugKotlin FAILED
+e: file:///Users/me/w/android/orders/src/main/kotlin/MenuCatalog.kt:42:13 Unresolved reference 'subcategory'.
 
 FAILURE: Build failed with an exception.
 
 * What went wrong:
-Execution failed for task ':waiter:compileDebugKotlin'.
+Execution failed for task ':orders:compileDebugKotlin'.
 > A failure occurred while executing org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction
 `
   assert.deepEqual(extractBuildErrors(log), [
-    '> Task :waiter:compileDebugKotlin FAILED',
+    '> Task :orders:compileDebugKotlin FAILED',
     "e: MenuCatalog.kt:42:13 Unresolved reference 'subcategory'.",
     'FAILURE: Build failed with an exception.',
     '> A failure occurred while executing org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction'

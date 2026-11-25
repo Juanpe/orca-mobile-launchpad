@@ -202,7 +202,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       )
       return
     }
-    // "Juanpe’s iPhone 18 Pro" → "iPhone 18 Pro": the owner's name costs status bar room.
+    // "Alex’s iPhone 18 Pro" → "iPhone 18 Pro": the owner's name costs status bar room.
     const target = (s.config.destination?.name ?? 'choose a destination').replace(/^.*?[’']s\s+/, '')
     const scheme = s.config.scheme ?? s.projects[0]?.label.split('/').pop()?.replace(/\.\w+$/, '')
     const run = s.run
@@ -815,7 +815,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
 }
 
-/** What a run is called: the scheme, or for Android the app's name (`:app` → Qamarero). */
+/** What a run is called: the scheme, or for Android the app's name (`:app` → Brewlog). */
 function displayTarget(target: string, project?: ProjectRef): string {
   if (!target.startsWith(':')) return target
   return target === ':app' && project?.name ? project.name : target.slice(1)
