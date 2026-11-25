@@ -1,5 +1,6 @@
 // Mobile Launchpad's worker: follows the focused workspace, keeps each workspace's run config, drives
 // the status bar item, and runs builds in an Orca terminal of that workspace.
+import { progressOf } from './progress'
 import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { exec } from './exec'
@@ -206,7 +207,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
     let item: { text: string; icon: 'rocket' | 'hammer' | 'play' | 'error' | 'stop'; tone: 'neutral' | 'accent' | 'success' | 'danger'; tooltip: string }
     if (isActive(run.phase)) {
-      item = { text: `${SPINNER[spinFrame]} ${labels[run.phase]} · ${target}`, icon: 'hammer', tone: 'accent', tooltip: `${run.scheme} → ${target}. Click to restart.` }
+      item = { text: `${SPINNER[spinFrame]} ${labels[run.phase]} ${progressOf(run, Date.now())}% · ${target}`, icon: 'hammer', tone: 'accent', tooltip: `${run.scheme} → ${target}. Click to restart.` }
     } else if (run.phase === 'running') {
       item = { text: `${run.scheme} · ${target}`, icon: 'play', tone: 'success', tooltip: `Running on ${target}. Click to rebuild and relaunch.` }
     } else if (run.phase === 'failed') {

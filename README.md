@@ -5,7 +5,7 @@ on an iOS simulator or an iPhone connected by cable or Wi-Fi, from the status ba
 in worktrees that contain a mobile project (iOS today, Android next).
 
 - **Status bar**: `🚀 MyApp · iPhone 18 Pro`. Click to build and run; while building it shows the
-  phase (`Building… · iPhone`), turns green while the app runs and red if it fails.
+  phase and progress (`⠋ Building 42% · iPhone`), turns green while the app runs and red if it fails.
 - **Mobile Launchpad panel** (right sidebar): a launch card with status, progress and elapsed time,
   the build settings (project, scheme, configuration) and the destination picker (simulators and
   devices). Each worktree remembers its own settings.
