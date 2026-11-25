@@ -11,6 +11,7 @@ import './protocol'
 import { createSimulator } from './platforms/ios'
 import {
   DEFAULT_CONFIGURATION,
+  chooseDestination,
   defaultDestination,
   defaultTarget,
   findProjects,
@@ -26,6 +27,7 @@ import { extractBuildErrors, logTail } from './platforms/ios-parse'
 import {
   isActive,
   worktreeSimulatorName,
+  type Destination,
   type Device,
   type LaunchpadState,
   type OtherRun,
@@ -81,6 +83,12 @@ export default function activate(orca: OrcaWorkerApi): void {
   const fileFor = async (path: string, kind: 'status' | 'build' | 'out') =>
     join(await workDir(), `${kind}-${createHash('sha1').update(path).digest('hex').slice(0, 12)}.${kind === 'status' ? 'txt' : 'log'}`)
   const buildTimeKey = (path: string) => `buildMs:${path}`
+  /** The device the latest run of the platform used, in any worktree. */
+  const lastDestinationKey = (platform: Platform) => `lastDestination:${platform}`
+  async function lastDestination(platform: Platform): Promise<Destination | undefined> {
+    const stored = (await orca.storage.get(lastDestinationKey(platform)).catch(() => null)) as Destination | null
+    return stored?.platform === platform ? stored : undefined
+  }
 
   async function readConfig(path: string): Promise<WorkspaceConfig> {
     const stored = await orca.storage.get(configKey(path))
@@ -466,13 +474,18 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (!configurations.includes(config.configuration)) {
       config = await writeConfig(workspace.path, { configuration: configurations.includes(DEFAULT_CONFIGURATION[platform]) ? DEFAULT_CONFIGURATION[platform] : configurations[0]! })
     }
-    if (!config.destination || config.destination.platform !== platform) {
+    // A destination asked for now is used as is; otherwise the worktree's own one while it is
+    // available, then the last device run on, then the first sensible one.
+    if (!overrides.destination) {
       const { devices } = await listDevices()
-      const device = defaultDestination(platform, devices, workspace.name)
-      if (!device) {
+      const saved = config.destination?.platform === platform ? config.destination : undefined
+      const device = chooseDestination(platform, devices, workspace.name, saved, await lastDestination(platform))
+      if (device) {
+        if (device.udid !== saved?.udid || device.name !== saved.name) config = await writeConfig(workspace.path, { destination: pickDestination(device) })
+      } else if (!saved) {
+        // Nothing listed (the tools may have failed): a saved destination still gets its try.
         throw Object.assign(new Error(platform === 'android' ? 'No Android emulators or phones (create an AVD in Android Studio)' : 'No simulators or devices available'), { code: 'action_failed' })
       }
-      config = await writeConfig(workspace.path, { destination: pickDestination(device) })
     }
     return config
   }
@@ -480,6 +493,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   /** Builds and runs a worktree's app: the panel's Build & Run, the status bar and `launchpad run`. */
   async function launch(workspace: WorkspaceInfo, projects: ProjectRef[], overrides: Overrides = {}): Promise<RunState> {
     const config = await runConfig(workspace, projects, overrides)
+    await orca.storage.set(lastDestinationKey(config.destination!.platform), toJson(config.destination!))
     const previous = runs.get(workspace.path)
     if (previous) settleWaiters(workspace.path, { ...previous, phase: 'stopped', message: 'A new run replaced it' })
     await endRun(workspace.path)

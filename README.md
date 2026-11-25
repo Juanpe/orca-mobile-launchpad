@@ -47,7 +47,7 @@ Let's get back to work 🙂
 - 🚀 **One click from the status bar:** `🚀 Brewlog · iPhone 18 Pro`. While it builds it shows the step and progress, turns green when the app runs and red when it fails.
 - 🍏🤖 **iOS and Android:** Xcode workspaces and projects, and Gradle builds. A worktree with both apps gets an iOS · Android switch.
 - 📱 **Simulators, emulators and phones:** iPhones and Android phones by cable or Wi-Fi. Plug one in and it shows up on its own.
-- 🌳 **Settings per worktree:** scheme or app module, configuration or build variant, and destination.
+- 🌳 **Settings per worktree:** scheme or app module, configuration or build variant, and destination. A worktree with no destination, or whose one is unplugged or gone, runs on the last device used (in any worktree), or else the first available one.
 - 🧪 **A simulator per worktree:** "Simulator for this worktree" creates `<worktree> iPhone`, so several branches run side by side.
 - 👀 **Runs in other worktrees:** their progress, failure or crash, with Stop, Go to worktree and Terminal.
 - 🧯 **Failures you can read:** the build errors and, after a crash, the exception and the crashed thread.

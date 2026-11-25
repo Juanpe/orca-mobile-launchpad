@@ -1,5 +1,6 @@
 // One door to both adapters: the worker asks here and the project's platform picks iOS or Android.
-import type { Device, Platform, ProjectRef, WorkspaceConfig } from '../types'
+import { readFile } from 'node:fs/promises'
+import type { Destination, Device, Platform, ProjectRef, WorkspaceConfig } from '../types'
 import { worktreeSimulatorName } from '../types'
 import {
   findAndroidProjects,
@@ -50,6 +51,9 @@ export const DEFAULT_CONFIGURATION: Record<Platform, string> = { ios: 'Debug', a
 
 /** Simulators, emulators and phones of both platforms. */
 export async function listDevices(): Promise<{ devices: Device[]; error?: string }> {
+  // Tests list made-up devices from a JSON file instead of asking Xcode and adb.
+  const fake = process.env.MOBILE_LAUNCHPAD_DEVICES
+  if (fake) return { devices: JSON.parse(await readFile(fake, 'utf8')) as Device[] }
   const [ios, android] = await Promise.all([listIosDevices(), listAndroidDevices()])
   const error = [ios.error, android.error].filter(Boolean).join('\n')
   const devices = [...ios.devices, ...android.devices]
@@ -61,6 +65,27 @@ export function defaultDestination(platform: Platform, devices: readonly Device[
   if (platform === 'android') return preferredAndroidDestination(devices)
   const ios = devices.filter((d) => d.platform === 'ios')
   return ios.length ? preferredIosDestination(ios, worktreeSimulatorName(workspaceName)) : undefined
+}
+
+/** The listed device a destination names, when it can be run on now: a simulator or emulator
+ *  that is listed (a shut-down one boots on run), or a phone that is connected. */
+export function availableDevice(destination: Destination | undefined, devices: readonly Device[]): Device | undefined {
+  if (!destination) return undefined
+  const device = devices.find((d) => d.platform === destination.platform && d.udid === destination.udid)
+  return device && (device.kind === 'simulator' || device.state === 'connected') ? device : undefined
+}
+
+/** Where a worktree runs: its own destination while it is available, else the platform's last
+ *  used device (in any worktree) while that is available, else the first sensible one. */
+export function chooseDestination(
+  platform: Platform,
+  devices: readonly Device[],
+  workspaceName: string,
+  saved: Destination | undefined,
+  lastUsed: Destination | undefined
+): Device | undefined {
+  const own = (d: Destination | undefined) => (d?.platform === platform ? availableDevice(d, devices) : undefined)
+  return own(saved) ?? own(lastUsed) ?? defaultDestination(platform, devices.filter((d) => d.kind === 'simulator' || d.state === 'connected'), workspaceName)
 }
 
 export type StartRequest = {

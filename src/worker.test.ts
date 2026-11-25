@@ -35,6 +35,17 @@ process.env.MOBILE_LAUNCHPAD_RUNNER = join(fakeRunnerDir, 'runner.sh')
 await writeFile(process.env.MOBILE_LAUNCHPAD_RUNNER, 'sleep 4\n')
 process.env.MOBILE_LAUNCHPAD_WORKDIR = join(fakeRunnerDir, 'work')
 
+// The devices the worker sees instead of Xcode's and adb's.
+const DEVICES = [
+  { platform: 'ios', kind: 'simulator', udid: 'SIM', name: 'iPhone 18 Pro', state: 'booted', os: '27.0' },
+  { platform: 'ios', kind: 'simulator', udid: 'SIM-2', name: 'iPad Air', state: 'shutdown', os: '27.0' },
+  { platform: 'ios', kind: 'device', udid: 'PHONE', name: 'Test iPhone', state: 'connected', transport: 'cable', os: '27.0' },
+  { platform: 'android', kind: 'simulator', udid: 'Pixel_9', name: 'Pixel 9', state: 'shutdown', os: '' }
+]
+process.env.MOBILE_LAUNCHPAD_DEVICES = join(fakeRunnerDir, 'devices.json')
+const listDevices = (devices: readonly object[]) => writeFile(process.env.MOBILE_LAUNCHPAD_DEVICES!, JSON.stringify(devices))
+await listDevices(DEVICES)
+
 test('finds root and ios/ projects, prefers the workspace, ignores other folders', async () => {
   const root = await fakeWorktree()
   try {
@@ -365,5 +376,66 @@ test('a worktree with iOS and Android: switching platform resets variant and des
     await worker.deactivate()
   } finally {
     await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('a worktree with no destination runs on the last device used, or the first one when that is gone', async () => {
+  const root = await fakeWorktree()
+  const other = await fakeWorktree()
+  try {
+    const host = mockHost({
+      results: {
+        'workspace.readContext': { workspaceId: 'ws-1', branch: 'feature/x', displayName: 'bill-customer', terminals: [] },
+        'workspace.list': {
+          workspaces: [
+            { id: 'ws-1', kind: 'worktree', name: 'bill-customer', path: root, branch: 'feature/x', hostId: 'local' },
+            { id: 'ws-2', kind: 'worktree', name: 'web', path: other, branch: 'main', hostId: 'local' }
+          ],
+          truncated: false
+        },
+        'terminal.create': { terminalId: 't-1' },
+        'terminal.list': { terminals: [{ id: 't-1' }], truncated: false }
+      }
+    })
+    const worker = await mountWorker(main, { host, events: ['workspace.changed'], commands: ['launchpad.run', 'launchpad.stop'] })
+    const focus = (id: string, name: string) =>
+      worker.emit('workspace.changed', { context: { workspaceId: id, branch: 'main', displayName: name, terminals: [] } })
+    await worker.request('config.update', { scheme: 'App', destination: { platform: 'ios', kind: 'device', udid: 'PHONE', name: 'Test iPhone' } })
+    await worker.request('run')
+    await worker.request('stop', {})
+
+    // The other worktree has never chosen one: it takes the phone the last run used.
+    await focus('ws-2', 'web')
+    await worker.request('config.update', { scheme: 'App' })
+    let s = await worker.request('run')
+    assert.equal(s.config.destination?.udid, 'PHONE')
+    assert.equal(s.run.destinationName, 'Test iPhone')
+    await worker.request('stop', {})
+
+    // A destination the worktree chose is kept while it is available, and becomes the last used.
+    await worker.request('config.update', { destination: { platform: 'ios', kind: 'simulator', udid: 'SIM-2', name: 'iPad Air' } })
+    s = await worker.request('run')
+    assert.equal(s.config.destination?.udid, 'SIM-2')
+    await worker.request('stop', {})
+
+    // Unplugged phone: the first worktree moves to the last used device (the iPad simulator)...
+    await listDevices(DEVICES.map((d) => (d.udid === 'PHONE' ? { ...d, state: 'unavailable' } : d)))
+    await focus('ws-1', 'bill-customer')
+    s = await worker.request('run')
+    assert.equal(s.config.destination?.udid, 'SIM-2')
+    await worker.request('stop', {})
+
+    // ...and with neither the phone nor that simulator around, to the first one.
+    await listDevices(DEVICES.filter((d) => d.udid !== 'PHONE' && d.udid !== 'SIM-2'))
+    await worker.request('config.update', { destination: { platform: 'ios', kind: 'device', udid: 'PHONE', name: 'Test iPhone' } })
+    s = await worker.request('run')
+    assert.equal(s.config.destination?.udid, 'SIM')
+    assert.equal(s.run.destinationName, 'iPhone 18 Pro')
+    await worker.request('stop', {})
+    await worker.deactivate()
+  } finally {
+    await listDevices(DEVICES)
+    await rm(root, { recursive: true, force: true })
+    await rm(other, { recursive: true, force: true })
   }
 })
