@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "mobile-launchpad",
   "name": "Mobile Launchpad",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Build & Run the active worktree's iOS or Android app on a simulator, emulator or phone (cable or Wi-Fi), from Orca's status bar.",
   "license": "MIT",
   "engines": {
@@ -75,5 +75,27 @@
   "cover": {
     "path": "assets/cover.png",
     "alt": "Mobile Launchpad's panel building one worktree's app while two other worktrees run, next to the tagline: Build & Run. Any worktree. Any phone."
-  }
+  },
+  "screenshots": [
+    {
+      "path": "assets/screenshot-building.png",
+      "alt": "The panel building the active worktree's iOS app on an iPhone over cable, step 2 of 4, while two other worktrees run on their own devices.",
+      "caption": "Build & Run any worktree"
+    },
+    {
+      "path": "assets/screenshot-devices.png",
+      "alt": "The app running on a cabled iPhone, with the destination list of simulators and physical devices.",
+      "caption": "Simulator or your phone"
+    },
+    {
+      "path": "assets/screenshot-android.png",
+      "alt": "The Android side: a Gradle project ready to run on a Pixel emulator.",
+      "caption": "iOS and Android"
+    },
+    {
+      "path": "assets/screenshot-failed.png",
+      "alt": "A failed build with two Swift compiler errors in the panel and a button to open the full log in Console.",
+      "caption": "Errors you can read"
+    }
+  ]
 }
