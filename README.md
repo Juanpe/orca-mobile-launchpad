@@ -16,7 +16,7 @@ un simulador de iOS o en un iPhone conectado por cable o Wi-Fi, desde el status 
 El worker detecta el `.xcworkspace`/`.xcodeproj` del worktree (hasta 3 niveles, sin `Pods` ni
 `node_modules`) y, al lanzar, abre una terminal de Orca en ese worktree que ejecuta un script:
 
-1. Simulador: `simctl bootstatus -b` y abre Simulator.app en segundo plano.
+1. Simulador: `simctl bootstatus -b` y lo muestra en el panel de emulador de Orca (`orca emulator attach`), o en Simulator.app si está instalado.
 2. `xcodebuild build` (con `xcbeautify` si está instalado; si no, `-quiet`). En dispositivo añade
    `-allowProvisioningUpdates`. Usa el DerivedData por defecto de Xcode, así que comparte caché
    con Xcode.

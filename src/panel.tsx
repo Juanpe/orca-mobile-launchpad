@@ -231,6 +231,44 @@ export default function Panel() {
         <Badge tone={phaseTone(run.phase)}>{PHASE_LABEL[run.phase]}</Badge>
       </Row>
 
+      <Row gap="xs">
+        <Button
+          icon="play"
+          tone="accent"
+          disabled={read(busy) !== null}
+          tooltip="Mod+Alt+R"
+          onPress={() => guarded('run', () => plugin.request('run', undefined, { timeoutMs: 120_000 }))}
+        >
+          {active ? 'Relanzar' : 'Build & Run'}
+        </Button>
+        <Button
+          icon="stop"
+          variant="outline"
+          disabled={!active || read(busy) !== null}
+          onPress={() => guarded('stop', () => plugin.request('stop'))}
+        >
+          Stop
+        </Button>
+      </Row>
+
+      {run.phase === 'failed' ? (
+        <Callout tone="danger" title="Falló" icon="error">
+          <Text size="sm">{run.message ?? 'Revisa la terminal del build.'}</Text>
+        </Callout>
+      ) : null}
+      {failure ? (
+        <Callout tone="danger" title="Error" icon="error">
+          <Text size="sm">{failure}</Text>
+        </Callout>
+      ) : null}
+      {run.destinationName && run.phase !== 'idle' ? (
+        <Text muted size="xs">
+          {`${run.scheme} → ${run.destinationName}`}
+        </Text>
+      ) : null}
+
+      <Separator />
+
       {s.projects.length > 1 ? (
         <Select
           label="Proyecto"
@@ -271,43 +309,6 @@ export default function Panel() {
 
       <Separator />
       <Destinations s={s} />
-      <Separator />
-
-      <Row gap="xs">
-        <Button
-          icon="play"
-          tone="accent"
-          disabled={read(busy) !== null}
-          tooltip="Mod+Alt+R"
-          onPress={() => guarded('run', () => plugin.request('run', undefined, { timeoutMs: 120_000 }))}
-        >
-          {active ? 'Relanzar' : 'Build & Run'}
-        </Button>
-        <Button
-          icon="stop"
-          variant="outline"
-          disabled={!active || read(busy) !== null}
-          onPress={() => guarded('stop', () => plugin.request('stop'))}
-        >
-          Stop
-        </Button>
-      </Row>
-
-      {run.phase === 'failed' ? (
-        <Callout tone="danger" title="Falló" icon="error">
-          <Text size="sm">{run.message ?? 'Revisa la terminal del build.'}</Text>
-        </Callout>
-      ) : null}
-      {failure ? (
-        <Callout tone="danger" title="Error" icon="error">
-          <Text size="sm">{failure}</Text>
-        </Callout>
-      ) : null}
-      {run.destinationName && run.phase !== 'idle' ? (
-        <Text muted size="xs">
-          {`${run.scheme} → ${run.destinationName}`}
-        </Text>
-      ) : null}
     </Stack>
   )
 }

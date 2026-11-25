@@ -166,12 +166,20 @@ if [ "$KIND" = simulator ]; then
   status preparing
   step "Arrancando simulador"
   xcrun simctl bootstatus "$UDID" -b > /dev/null || fail "No se pudo arrancar el simulador"
-  if [ "$OPEN_SIM" = 1 ]; then open -g -a Simulator --args -CurrentDeviceUDID "$UDID"; fi
+  if [ "$OPEN_SIM" = 1 ]; then
+    # Orca's emulator pane when this runs in an Orca terminal; else Simulator.app if installed.
+    if command -v orca > /dev/null && orca emulator attach "$UDID" --json > /dev/null 2>&1; then
+      printf '  Simulador en el panel de emulador de Orca\n'
+    else
+      open -g -b com.apple.iphonesimulator --args -CurrentDeviceUDID "$UDID" 2> /dev/null || true
+    fi
+  fi
 fi
 
 status building
 step "Compilando $SCHEME ($CONFIG)"
-if command -v xcbeautify > /dev/null; then
+# A version-manager shim (mise, asdf) can exist without a working xcbeautify: run it to be sure.
+if xcbeautify --version > /dev/null 2>&1; then
   xcb build 2>&1 | xcbeautify --disable-logging || fail "Build fallido"
 else
   xcb -quiet build || fail "Build fallido"
