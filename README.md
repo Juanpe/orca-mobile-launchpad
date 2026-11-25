@@ -4,6 +4,12 @@ An [Orca](https://github.com/stablyai/orca) plugin to **Build & Run the active w
 on an iOS simulator, an Android emulator, or a phone connected by cable or Wi-Fi, from the status
 bar. It only shows up in worktrees that contain a mobile project (an Xcode project or a Gradle build).
 
+<p>
+  <img src="assets/building-dark.png" width="250" alt="Building on an iPhone, with runs in two other worktrees">
+  <img src="assets/devices-light.png" width="250" alt="Destination picker with iPhones by cable and Wi-Fi">
+  <img src="assets/android-dark.png" width="250" alt="Android: emulators and build variant">
+</p>
+
 - **Status bar**: `🚀 MyApp · iPhone 18 Pro`. Click to build and run; while building it shows the
   phase and progress (`⠋ Building 42% · iPhone`), turns green while the app runs and red if it fails.
 - **Mobile Launchpad panel** (right sidebar): a launch card with status, progress and elapsed time,
@@ -103,6 +109,8 @@ Layout:
 - `src/platforms/android.ts` / `android-parse.ts`: the Android adapter and its parsers (adb, Gradle).
 - `src/platforms/index.ts`: picks the adapter by the project's platform.
 - `src/platforms/runner.ts`: starts a run script in its own process group and follows its output.
+- `assets/`: screenshots from the `showcase*` scenarios in `src/panel.check.ts` (made-up data):
+  `orca plugin shot . --scenario showcaseBuilding --theme dark --width 380 --out assets/building-dark.png`.
 - `fixtures/demo-worktree`: a fake worktree for `orca plugin check` / `plugin shot --scenario demo`.
 
 ## Android
