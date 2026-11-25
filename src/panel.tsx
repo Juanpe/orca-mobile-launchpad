@@ -89,17 +89,22 @@ async function loadSchemes(refresh = false): Promise<void> {
   }
 }
 
-async function loadDevices(): Promise<void> {
-  set(devices, null)
+async function loadDevices(quiet = false): Promise<void> {
+  // A quiet reload keeps the current list on screen while it asks again.
+  if (!quiet) set(devices, null)
   try {
     const answer = await plugin.request('devices.list', undefined, { timeoutMs: 60_000 })
     set(devices, answer.devices)
     set(devicesError, answer.error)
   } catch (e) {
+    if (quiet) return // keep what is shown; the next round tries again
     set(devices, [])
     set(devicesError, (e as Error).message)
   }
 }
+
+/** How often the panel looks for devices plugged in, unplugged, booted or switched to cable. */
+const DEVICES_POLL_MS = 3000
 
 /** Saves part of the workspace's config and draws the state the worker answers. */
 function updateConfig(label: string, patch: Partial<WorkspaceConfig>): Promise<void> {
@@ -133,7 +138,20 @@ export function setup(ctx: PanelContext): void {
     if (isActive(run.phase) || celebrating || elsewhere) update(tick, (n) => n + 1)
   }, ANIMATION_MS)
   ;(timer as { unref?: () => void }).unref?.() // never keeps a test process alive
-  ctx.signal.addEventListener('abort', () => clearInterval(timer))
+  // Keep the destination list current while the panel is on screen (both lists take ~0.1s).
+  let polling = false
+  const devicesTimer = setInterval(() => {
+    if (polling || !read(ctx.visible) || read(devices) === null) return
+    polling = true
+    void loadDevices(true).finally(() => {
+      polling = false
+    })
+  }, DEVICES_POLL_MS)
+  ;(devicesTimer as { unref?: () => void }).unref?.()
+  ctx.signal.addEventListener('abort', () => {
+    clearInterval(timer)
+    clearInterval(devicesTimer)
+  })
 }
 
 // ── Run status ────────────────────────────────────────────────────────────────────────────────

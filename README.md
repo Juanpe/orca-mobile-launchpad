@@ -8,7 +8,8 @@ in worktrees that contain a mobile project (iOS today, Android next).
   phase and progress (`⠋ Building 42% · iPhone`), turns green while the app runs and red if it fails.
 - **Mobile Launchpad panel** (right sidebar): a launch card with status, progress and elapsed time,
   the build settings (project, scheme, configuration) and the destination picker (simulators and
-  devices). Each worktree remembers its own settings.
+  devices), which refreshes itself every 3 seconds while the panel is visible: an iPhone plugged in
+  or switched to cable shows up on its own. Each worktree remembers its own settings.
 - **Simulator per worktree**: "Simulator for this worktree" creates `<worktree> iPhone` with the
   model and iOS version of the selected simulator, so several branches can run side by side.
 - **Runs in other worktrees** stay visible: the panel lists them under "Other worktrees" with their

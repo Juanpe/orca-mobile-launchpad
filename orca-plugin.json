@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "mobile-launchpad",
   "name": "Mobile Launchpad",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Build & Run the active worktree's mobile app on a simulator or your iPhone (cable or Wi-Fi), from Orca's status bar.",
   "license": "MIT",
   "engines": {

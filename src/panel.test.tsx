@@ -188,3 +188,28 @@ test('runs in other worktrees stay visible, with progress, navigation and stop',
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
+
+test('a device plugged in shows up without pressing refresh', async () => {
+  let plugged = false
+  const view = await mount(panel, {
+    host: mockHost({
+      requests: {
+        'state.get': () => STATE,
+        'schemes.list': () => ({ schemes: ['App'], appSchemes: ['App'] }),
+        'devices.list': () => ({
+          devices: plugged
+            ? [{ platform: 'ios', kind: 'device', udid: 'U9', name: 'Cable iPhone', state: 'connected', transport: 'cable', os: '27.2' }]
+            : []
+        })
+      }
+    })
+  })
+  await view.select({ type: 'Tabs' }, 'devices')
+  assert.equal(view.find({ type: 'ListItem', label: /Cable iPhone/ }), null)
+  plugged = true
+  await new Promise((resolve) => setTimeout(resolve, 3300))
+  await view.settled()
+  assert.ok(view.find({ type: 'ListItem', label: /Cable iPhone/ }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
