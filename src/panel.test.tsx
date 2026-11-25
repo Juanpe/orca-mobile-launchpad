@@ -71,7 +71,7 @@ test('picking a device saves it as the destination; Build & Run asks the worker'
   await view.press({ text: 'Build & Run' })
   assert.equal(runs, 1)
   await view.post('state.changed', { ...STATE, run: { phase: 'building', scheme: 'App', destinationName: 'Wifi iPhone' } })
-  assert.ok(view.find({ type: 'Badge', text: '● Building' }))
+  assert.ok(view.find({ type: 'Badge', text: 'Building' }))
   assert.ok(view.find({ type: 'Progress' }))
   assert.ok(view.find({ text: 'Relaunch' }))
   assert.deepEqual(view.errors, [])

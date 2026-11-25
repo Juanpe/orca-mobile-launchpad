@@ -28,6 +28,11 @@ function hostFor(root: string, extra: Record<string, unknown> = {}) {
   })
 }
 
+// A stand-in for the runner script: stays alive a few seconds and does nothing else.
+const fakeRunnerDir = await mkdtemp(join(tmpdir(), 'launchpad-runner-'))
+process.env.MOBILE_LAUNCHPAD_RUNNER = join(fakeRunnerDir, 'runner.sh')
+await writeFile(process.env.MOBILE_LAUNCHPAD_RUNNER, 'sleep 4\n')
+
 test('finds root and ios/ projects, prefers the workspace, ignores other folders', async () => {
   const root = await fakeWorktree()
   try {
@@ -180,5 +185,40 @@ test('a run keeps showing, and the status bar says so, after switching worktree'
   } finally {
     await rm(root, { recursive: true, force: true })
     await rm(other, { recursive: true, force: true })
+  }
+})
+
+test('closing the run terminal does not stop the build; Terminal opens a new one', async () => {
+  const root = await fakeWorktree()
+  try {
+    let created = 0
+    const host = mockHost({
+      results: {
+        'workspace.readContext': { workspaceId: 'ws-1', branch: 'feature/x', displayName: 'bill-customer', terminals: [] },
+        'workspace.list': {
+          workspaces: [{ id: 'ws-1', kind: 'worktree', name: 'bill-customer', path: root, branch: 'feature/x', hostId: 'local' }],
+          truncated: false
+        },
+        'terminal.list': { terminals: [], truncated: false },
+        'terminal.focus': { focused: true },
+        'terminal.create': () => ({ terminalId: `t-${++created}` })
+      }
+    })
+    const worker = await mountWorker(main, { host, events: ['workspace.changed'], commands: ['launchpad.run', 'launchpad.stop'] })
+    await worker.request('config.update', {
+      scheme: 'App',
+      destination: { platform: 'ios', kind: 'simulator', udid: 'SIM', name: 'iPhone 18 Pro' }
+    })
+    await worker.request('run')
+    // The terminal is gone (terminal.list is empty), yet the run goes on.
+    await new Promise((resolve) => setTimeout(resolve, 2200))
+    assert.equal((await worker.request('state.get')).run.phase, 'preparing')
+    assert.deepEqual(await worker.request('worktree.show', { path: root, terminal: true }), { shown: true })
+    assert.equal(created, 2)
+    await worker.request('stop', {})
+    assert.equal((await worker.request('state.get')).run.phase, 'stopped')
+    await worker.deactivate()
+  } finally {
+    await rm(root, { recursive: true, force: true })
   }
 })

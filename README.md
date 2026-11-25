@@ -20,8 +20,10 @@ in worktrees that contain a mobile project (iOS today, Android next).
 
 The worker looks for an `.xcworkspace`/`.xcodeproj` at the worktree root or in a conventional mobile
 folder (`ios/`, `iosApp/`, `apple/`, `app/`, `mobile/ios/`, `apps/ios/`…). A folder that only
-contains other repositories does not count. A run opens an Orca terminal in that worktree that runs a
-script:
+contains other repositories does not count. A run starts a script in its own process group, apart
+from any terminal, and opens an Orca terminal in that worktree that follows its output (`tail -F`).
+Closing or interrupting that terminal leaves the build running; "Terminal" in the panel opens it
+again. The script:
 
 1. Simulator: `simctl bootstatus -b`, then shows it in Orca's emulator pane (`orca emulator attach`),
    or in Simulator.app when installed.
@@ -29,11 +31,12 @@ script:
    adds `-allowProvisioningUpdates`. It uses Xcode's default DerivedData, so it shares the build cache
    with Xcode.
 3. Installs and launches with the app's console in the terminal:
-   - Simulator: `simctl install` + `simctl launch --console-pty`.
+   - Simulator: `simctl install` + `simctl launch --console`.
    - iPhone: `devicectl device install app` + `devicectl device process launch --console`.
 
 The script writes its phase to a status file that the worker reads every second to update the status
-bar. Ctrl-C in the terminal (or Stop) stops the app. Relaunching closes the previous terminal.
+bar. Stop (panel or palette) ends the script's process group: the build, or the app it launched.
+Relaunching does the same and closes the previous terminal.
 
 ## Install
 

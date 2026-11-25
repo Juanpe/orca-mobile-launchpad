@@ -248,7 +248,7 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
             <Heading level={1}>{title}</Heading>
             <Badge tone="neutral">{s.config.configuration}</Badge>
           </Row>
-          <Badge tone={phase.tone}>{`● ${phase.label}`}</Badge>
+          <Badge tone={phase.tone}>{phase.label}</Badge>
         </Row>
         <Text muted size="xs" truncate>
           {branch}
@@ -344,7 +344,7 @@ function OtherRunCard({ other, canNavigate }: { other: OtherRun; canNavigate: bo
         <Text weight="semibold" truncate>
           {run.scheme ?? workspace.name}
         </Text>
-        <Badge tone={phase.tone}>{`● ${phase.label}`}</Badge>
+        <Badge tone={phase.tone}>{phase.label}</Badge>
       </Row>
       <Text muted size="xs" truncate>
         {`⎇ ${workspace.branch || workspace.name} → ${run.destinationName ?? ''}`}

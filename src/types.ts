@@ -70,7 +70,11 @@ export type RunState = {
   crashPath?: string
   crashTitle?: string
   crashSummary?: string
+  /** The Orca terminal that follows the run's output; closing it does not stop the run. */
   terminalId?: string
+  /** The runner's process group, and the file its output goes to. */
+  pid?: number
+  outPath?: string
   destinationName?: string
   scheme?: string
 }

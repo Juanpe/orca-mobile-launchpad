@@ -12,7 +12,10 @@ import {
   listAppSchemes,
   listDevices,
   listSchemes,
-  prepareRunCommand,
+  followCommand,
+  isAlive,
+  startRun,
+  stopProcessGroup,
   workDir
 } from './platforms/ios'
 import {
@@ -76,8 +79,8 @@ export default function activate(orca: OrcaWorkerApi): void {
   let spinBackoff = 0
 
   const configKey = (path: string) => `config:${path}`
-  const fileFor = async (path: string, kind: 'status' | 'build') =>
-    join(await workDir(), `${kind}-${createHash('sha1').update(path).digest('hex').slice(0, 12)}.${kind === 'build' ? 'log' : 'txt'}`)
+  const fileFor = async (path: string, kind: 'status' | 'build' | 'out') =>
+    join(await workDir(), `${kind}-${createHash('sha1').update(path).digest('hex').slice(0, 12)}.${kind === 'status' ? 'txt' : 'log'}`)
   const buildTimeKey = (path: string) => `buildMs:${path}`
 
   async function readConfig(path: string): Promise<WorkspaceConfig> {
@@ -289,19 +292,15 @@ export default function activate(orca: OrcaWorkerApi): void {
       ticks++
       const run = runs.get(workspace.path)
       if (!run) return stopPolling(workspace.path)
-      // The person may close the terminal: then nothing writes the status file again.
-      if (ticks % 5 === 0 && run.terminalId) {
-        const alive = await orca.host
-          .call('terminal.list', { workspaceId: workspace.id })
-          .then((r) => r.terminals.some((t) => t.id === run.terminalId))
-          .catch(() => true)
-        if (!alive) {
-          setRun(workspace.path, { ...run, phase: 'stopped', finishedAt: Date.now(), terminalId: undefined })
-          await publish()
-          return
-        }
-      }
       const raw = (await readFile(statusFile, 'utf8').catch(() => '')).trim()
+      // A runner killed outside Mobile Launchpad (say SIGKILL) never writes its last phase.
+      if (ticks % 3 === 0 && run.pid && !isAlive(run.pid) && raw === last) {
+        if (isActive(run.phase) || run.phase === 'running') {
+          setRun(workspace.path, { ...run, phase: 'stopped', finishedAt: Date.now() })
+          await publish()
+        }
+        return
+      }
       if (!raw || raw === last) return
       last = raw
       const [word, ...rest] = raw.split(':')
@@ -339,11 +338,38 @@ export default function activate(orca: OrcaWorkerApi): void {
     await orca.host.call('notifications.show', { title: `Mobile Launchpad · ${title}`, body }).catch(() => undefined)
   }
 
-  async function closeRunTerminal(path: string): Promise<void> {
+  /** Ends a worktree's run (its whole process group) and closes the terminal that follows it. */
+  async function endRun(path: string): Promise<void> {
     const run = runs.get(path)
+    if (run?.pid) stopProcessGroup(run.pid)
     if (run?.terminalId) {
       await orca.host.call('terminal.close', { terminalId: run.terminalId }).catch(() => undefined)
     }
+  }
+
+  /** A terminal in the run's worktree that follows its output; made again if it was closed. */
+  async function showRunTerminal(path: string): Promise<boolean> {
+    const run = runs.get(path)
+    const workspace = runWorkspaces.get(path)
+    if (!run?.outPath || !workspace) return false
+    const open = run.terminalId
+      ? await orca.host
+          .call('terminal.list', { workspaceId: workspace.id })
+          .then((r) => r.terminals.some((t) => t.id === run.terminalId))
+          .catch(() => false)
+      : false
+    let terminalId = run.terminalId
+    if (!open) {
+      terminalId = (
+        await orca.host.call('terminal.create', {
+          workspaceId: workspace.id,
+          title: `▶ ${run.scheme}`,
+          command: followCommand(run.outPath)
+        })
+      ).terminalId
+      setRun(path, { ...run, terminalId })
+    }
+    return (await orca.host.call('terminal.focus', { terminalId: terminalId! })).focused
   }
 
   async function runFocused(): Promise<LaunchpadState> {
@@ -363,24 +389,29 @@ export default function activate(orca: OrcaWorkerApi): void {
       if (!device) throw Object.assign(new Error('No simulators or devices available'), { code: 'action_failed' })
       config = await writeConfig(workspace.path, { destination: pickDestination(device) })
     }
-    await closeRunTerminal(workspace.path)
+    await endRun(workspace.path)
     const statusFile = await fileFor(workspace.path, 'status')
     const logFile = await fileFor(workspace.path, 'build')
+    const outFile = await fileFor(workspace.path, 'out')
     await writeFile(statusFile, 'preparing\n', 'utf8')
     const estimate = await orca.storage.get(buildTimeKey(workspace.path))
-    const command = await prepareRunCommand({
-      projectPath: config.project!,
-      scheme: config.scheme!,
-      configuration: config.configuration,
-      destination: config.destination!,
-      statusFile,
-      logFile,
-      openSimulatorApp: true
-    })
+    const pid = await startRun(
+      {
+        projectPath: config.project!,
+        scheme: config.scheme!,
+        configuration: config.configuration,
+        destination: config.destination!,
+        statusFile,
+        logFile,
+        openSimulatorApp: true
+      },
+      outFile
+    )
+    // The terminal only follows the output: closing it does not touch the build.
     const { terminalId } = await orca.host.call('terminal.create', {
       workspaceId: workspace.id,
       title: `▶ ${config.scheme}`,
-      command
+      command: followCommand(outFile)
     })
     const now = Date.now()
     runWorkspaces.set(workspace.path, workspace)
@@ -390,6 +421,8 @@ export default function activate(orca: OrcaWorkerApi): void {
       phaseStartedAt: now,
       estimatedBuildMs: typeof estimate === 'number' ? estimate : undefined,
       logPath: logFile,
+      outPath: outFile,
+      pid,
       terminalId,
       scheme: config.scheme,
       destinationName: config.destination!.name
@@ -402,8 +435,11 @@ export default function activate(orca: OrcaWorkerApi): void {
   async function stopRun(path?: string): Promise<LaunchpadState> {
     const target = path ?? (await ensureFocused()).path
     const run = runs.get(target)
-    await closeRunTerminal(target)
-    if (run) setRun(target, { ...run, phase: 'stopped', finishedAt: Date.now(), terminalId: undefined })
+    if (run?.pid) stopProcessGroup(run.pid)
+    // Keep the terminal: it shows how the run ended.
+    if (run && (isActive(run.phase) || run.phase === 'running')) {
+      setRun(target, { ...run, phase: 'stopped', finishedAt: Date.now() })
+    }
     return publish()
   }
 
@@ -469,10 +505,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   orca.panels.handle('worktree.show', async ({ path, terminal }) => {
     const workspace = runWorkspaces.get(path)
     if (!workspace || !canNavigate()) return { shown: false }
-    const terminalId = runs.get(path)?.terminalId
-    if (terminal && terminalId) {
-      return { shown: (await orca.host.call('terminal.focus', { terminalId })).focused }
-    }
+    if (terminal) return { shown: await showRunTerminal(path) }
     await orca.host.call('workspace.open', { workspaceId: workspace.id })
     return { shown: true }
   })

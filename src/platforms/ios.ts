@@ -1,5 +1,7 @@
 // The iOS adapter: finding Xcode projects, listing destinations, and the script a run executes.
 // An Android adapter would offer the same functions over Gradle and adb.
+import { spawn } from 'node:child_process'
+import { openSync, closeSync } from 'node:fs'
 import { mkdir, readdir, readFile, rm, writeFile, chmod } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
@@ -163,8 +165,12 @@ export type RunRequest = {
   openSimulatorApp: boolean
 }
 
-/** Writes the runner script and answers the shell command that runs it in an Orca terminal. */
-export async function prepareRunCommand(request: RunRequest): Promise<string> {
+/**
+ * Starts the runner as its own process group, apart from any terminal: opening, closing or
+ * interrupting a terminal never stops a build. Its output goes to `outFile`, which an Orca
+ * terminal follows (`followCommand`). Answers the group's pid for `stopProcessGroup`.
+ */
+export async function startRun(request: RunRequest, outFile: string): Promise<number> {
   const script = join(await workDir(), 'ios-run.sh')
   await writeFile(script, RUN_SCRIPT, 'utf8')
   await chmod(script, 0o755)
@@ -179,14 +185,55 @@ export async function prepareRunCommand(request: RunRequest): Promise<string> {
     request.openSimulatorApp ? '1' : '0',
     request.logFile
   ]
-  return ['/bin/bash', script, ...args].map(shellQuote).join(' ')
+  const out = openSync(outFile, 'w')
+  try {
+    // Tests swap the runner for a stand-in (MOBILE_LAUNCHPAD_RUNNER) instead of running xcodebuild.
+    const runner = process.env.MOBILE_LAUNCHPAD_RUNNER || script
+    // A login shell gives the runner the person's PATH (orca, xcbeautify) as a terminal would.
+    const child = spawn('/bin/zsh', ['-lc', 'exec /bin/bash "$@"', 'mobile-launchpad', runner, ...args], {
+      cwd: dirname(request.projectPath),
+      detached: true,
+      stdio: ['ignore', out, out],
+      // Orca's own CLI in PATH lets the runner open the emulator pane.
+      env: { ...process.env, TERM: 'xterm-256color' }
+    })
+    child.unref()
+    if (!child.pid) throw new Error('Could not start the build')
+    return child.pid
+  } finally {
+    closeSync(out)
+  }
+}
+
+/** The command an Orca terminal runs to show a run's output live, from its first line. */
+export function followCommand(outFile: string): string {
+  return `tail -n +1 -F ${shellQuote(outFile)}`
+}
+
+/** Stops a run started by `startRun`: the runner and everything it started (xcodebuild,
+ *  simctl, devicectl). The runner's trap marks the run `stopped`. */
+export function stopProcessGroup(pid: number): void {
+  try {
+    process.kill(-pid, 'SIGTERM')
+  } catch {
+    // Already gone.
+  }
+}
+
+export function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM'
+  }
 }
 
 /**
  * The runner. It writes its phase to the status file (one word, `failed:<reason>` or
  * `crashed:<report path>`), which the worker polls to drive the status bar and the panel, keeps
  * the build's output in the log file, and prints the build and the app's console to the terminal.
- * Ctrl-C in the terminal stops the app and marks the run `stopped`.
+ * SIGTERM to its process group (Stop) ends the app and marks the run `stopped`.
  */
 export const RUN_SCRIPT = String.raw`#!/bin/bash
 # Mobile Launchpad iOS runner. Written by the Mobile Launchpad Orca plugin; rewritten on every run.
@@ -244,14 +291,14 @@ MARK="$LOG.launched"
 if [ "$KIND" = simulator ]; then
   xcrun simctl install "$UDID" "$APP" || fail "Could not install on the simulator"
   status launching
-  step "Launching (Ctrl-C to stop)"
+  step "Launching (Stop in Mobile Launchpad ends the app)"
   touch "$MARK"
   status running
-  xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" || fail "Could not launch the app"
+  xcrun simctl launch --console --terminate-running-process "$UDID" "$BUNDLE_ID" || fail "Could not launch the app"
 else
   xcrun devicectl device install app --device "$UDID" "$APP" || fail "Could not install on the device"
   status launching
-  step "Launching (Ctrl-C to stop)"
+  step "Launching (Stop in Mobile Launchpad ends the app)"
   touch "$MARK"
   status running
   xcrun devicectl device process launch --device "$UDID" --terminate-existing --console "$BUNDLE_ID" || fail "Could not launch the app (is the iPhone locked?)"
