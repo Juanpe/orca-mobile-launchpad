@@ -17,6 +17,36 @@ in worktrees that contain a mobile project (iOS today, Android next).
   `⠋ +1 elsewhere` (or shows `⠋ 1 building elsewhere` in a worktree without an app).
 - **Command palette**: `Mobile Launchpad: Build & Run` (`Mod+Alt+R`) and `Mobile Launchpad: Stop`.
 
+## `launchpad` command (for agents)
+
+The plugin writes a `launchpad` command so an agent (or a script) can run the app of the worktree it
+works in, through the same plugin: the run shows up in the panel and the status bar, with the
+worktree's saved scheme, configuration and destination.
+
+```sh
+launchpad run                        # waits until the app runs; exit 0, or 1 with the build errors
+launchpad run --device               # on the first connected iPhone (--device "18 Pro" to pick one)
+launchpad run --simulator            # on the worktree's simulator, or a booted one
+launchpad run --configuration Release --follow   # print the build output as it goes
+launchpad status | stop | devices
+```
+
+Exit codes: 0 running (or ran and exited), 1 build or launch failed, 2 crashed, 3 Orca or the plugin
+not reachable, 4 bad usage, 130 stopped. `launchpad --help` has the rest.
+
+The command lives in the plugin's work folder (`$TMPDIR/orca-launchpad/launchpad`), rewritten each
+time the plugin starts; put it on your PATH once:
+
+```sh
+ln -sf "$TMPDIR/orca-launchpad/launchpad" ~/.local/bin/launchpad
+```
+
+It talks to the plugin through files in `$TMPDIR/orca-launchpad/requests` (only your user can read
+it): a request per call, which the plugin picks up within a second. Orca must be open.
+
+A line for an agent's skill: *To try the app, run `launchpad run` (add `--device` for the iPhone). If
+it exits 1, fix the build errors it prints and run it again.*
+
 ## How it works
 
 The worker looks for an `.xcworkspace`/`.xcodeproj` at the worktree root or in a conventional mobile
@@ -24,7 +54,8 @@ folder (`ios/`, `iosApp/`, `apple/`, `app/`, `mobile/ios/`, `apps/ios/`…). A f
 contains other repositories does not count. A run starts a script in its own process group, apart
 from any terminal, and opens an Orca terminal in that worktree that follows its output (`tail -F`).
 Closing or interrupting that terminal leaves the build running; "Terminal" in the panel opens it
-again. The script:
+again. The terminal returns to its prompt when the run ends, so Orca does not show the worktree as
+busy. Runs are kept in the plugin's storage, so a reinstall or reload picks them up again. The script:
 
 1. Simulator: `simctl bootstatus -b`, then shows it in Orca's emulator pane (`orca emulator attach`),
    or in Simulator.app when installed.

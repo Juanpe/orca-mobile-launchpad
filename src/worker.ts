@@ -2,8 +2,9 @@
 // the status bar item, and runs builds in an Orca terminal of that workspace.
 import { progressOf } from './progress'
 import { createHash } from 'node:crypto'
-import { readFile, writeFile } from 'node:fs/promises'
-import { exec } from './exec'
+import { chmod, mkdir, readdir, readFile, realpath, rename, rm, utimes, writeFile } from 'node:fs/promises'
+import { exec, shellQuote } from './exec'
+import { CLI_SCRIPT, parseRequest, type CliRequest } from './cli'
 import { join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
 import './protocol'
@@ -270,6 +271,45 @@ export default function activate(orca: OrcaWorkerApi): void {
   function setRun(path: string, run: RunState): void {
     runs.set(path, toJson(run))
     if (!isActive(run.phase) && run.phase !== 'running') stopPolling(path)
+    saveRuns()
+    settleWaiters(path, run)
+  }
+
+  // Runs outlive the worker (a reinstall, a reload): keep them in storage to pick them up again.
+  const RUNS_KEY = 'runs'
+  let saving: Promise<unknown> = Promise.resolve()
+  function saveRuns(): void {
+    const entries = [...runs].flatMap(([path, run]) => {
+      const workspace = runWorkspaces.get(path)
+      return workspace ? [{ path, run, workspace }] : []
+    })
+    saving = saving.then(() => orca.storage.set(RUNS_KEY, toJson(entries))).catch((e) => orca.log(`save runs: ${(e as Error).message}`))
+  }
+
+  /** Brings back the runs of an earlier worker: those still alive resume, the rest get their last phase. */
+  async function restoreRuns(): Promise<void> {
+    const stored = (await orca.storage.get(RUNS_KEY).catch(() => null)) as { path: string; run: RunState; workspace: WorkspaceInfo }[] | null
+    for (const { path, run, workspace } of stored ?? []) {
+      if (runs.has(path)) continue
+      runWorkspaces.set(path, workspace)
+      const statusFile = await fileFor(path, 'status')
+      const ongoing = isActive(run.phase) || run.phase === 'running'
+      if (ongoing && run.pid && isAlive(run.pid)) {
+        runs.set(path, run)
+        startPolling(workspace, statusFile)
+        continue
+      }
+      if (ongoing) {
+        // It ended while no worker watched: its status file says how.
+        const raw = (await readFile(statusFile, 'utf8').catch(() => '')).trim()
+        const word = raw.split(':')[0] as RunPhase
+        const ended = ['failed', 'exited', 'crashed', 'stopped'].includes(word) ? word : 'stopped'
+        runs.set(path, { ...run, phase: ended, finishedAt: run.finishedAt ?? Date.now() })
+      } else {
+        runs.set(path, run)
+      }
+    }
+    saveRuns()
   }
 
   function stopPolling(path: string): void {
@@ -374,7 +414,7 @@ export default function activate(orca: OrcaWorkerApi): void {
         await orca.host.call('terminal.create', {
           workspaceId: workspace.id,
           title: `▶ ${run.scheme}`,
-          command: followCommand(run.outPath)
+          command: await followCommand(run.outPath, run.pid ?? 0)
         })
       ).terminalId
       setRun(path, { ...run, terminalId })
@@ -382,11 +422,21 @@ export default function activate(orca: OrcaWorkerApi): void {
     return (await orca.host.call('terminal.focus', { terminalId: terminalId! })).focused
   }
 
-  async function runFocused(): Promise<LaunchpadState> {
-    const workspace = await ensureFocused()
-    let s = await state()
-    if (!s.config.project) throw Object.assign(new Error('No Xcode project found in this worktree'), { code: 'action_failed' })
-    let config = s.config
+  type Overrides = { destination?: Device; scheme?: string; configuration?: string }
+
+  /** The config a worktree runs with: its saved one, its first project, and the scheme and
+   *  destination picked automatically when none is chosen; `overrides` are saved as well. */
+  async function runConfig(workspace: WorkspaceInfo, projects: ProjectRef[], overrides: Overrides = {}): Promise<WorkspaceConfig> {
+    let config = await readConfig(workspace.path)
+    if (!config.project || !projects.some((p) => p.path === config.project)) {
+      if (!projects[0]) throw Object.assign(new Error('No Xcode project found in this worktree'), { code: 'action_failed' })
+      config = await writeConfig(workspace.path, { project: projects[0].path, scheme: undefined })
+    }
+    const patch: Partial<WorkspaceConfig> = {}
+    if (overrides.scheme) patch.scheme = overrides.scheme
+    if (overrides.configuration) patch.configuration = overrides.configuration
+    if (overrides.destination) patch.destination = pickDestination(overrides.destination)
+    if (Object.keys(patch).length) config = await writeConfig(workspace.path, patch)
     if (!config.scheme) {
       const { schemes, appSchemes } = await schemesFor(config.project!)
       const scheme = preferredScheme(schemes, config.project!, appSchemes)
@@ -399,6 +449,14 @@ export default function activate(orca: OrcaWorkerApi): void {
       if (!device) throw Object.assign(new Error('No simulators or devices available'), { code: 'action_failed' })
       config = await writeConfig(workspace.path, { destination: pickDestination(device) })
     }
+    return config
+  }
+
+  /** Builds and runs a worktree's app: the panel's Build & Run, the status bar and `launchpad run`. */
+  async function launch(workspace: WorkspaceInfo, projects: ProjectRef[], overrides: Overrides = {}): Promise<RunState> {
+    const config = await runConfig(workspace, projects, overrides)
+    const previous = runs.get(workspace.path)
+    if (previous) settleWaiters(workspace.path, { ...previous, phase: 'stopped', message: 'A new run replaced it' })
     await endRun(workspace.path)
     const statusFile = await fileFor(workspace.path, 'status')
     const logFile = await fileFor(workspace.path, 'build')
@@ -421,7 +479,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     const { terminalId } = await orca.host.call('terminal.create', {
       workspaceId: workspace.id,
       title: `▶ ${config.scheme}`,
-      command: followCommand(outFile)
+      command: await followCommand(outFile, pid)
     })
     const now = Date.now()
     runWorkspaces.set(workspace.path, workspace)
@@ -438,8 +496,13 @@ export default function activate(orca: OrcaWorkerApi): void {
       destinationName: config.destination!.name
     })
     startPolling(workspace, statusFile)
-    s = await publish()
-    return s
+    return runs.get(workspace.path)!
+  }
+
+  async function runFocused(): Promise<LaunchpadState> {
+    const workspace = await ensureFocused()
+    await launch(workspace, focusedProjects)
+    return publish()
   }
 
   async function stopRun(path?: string): Promise<LaunchpadState> {
@@ -519,6 +582,175 @@ export default function activate(orca: OrcaWorkerApi): void {
     await orca.host.call('workspace.open', { workspaceId: workspace.id })
     return { shown: true }
   })
+
+  // ── The `launchpad` command ─────────────────────────────────────────────────────────────────
+  // Requests arrive as files in a private folder; see src/cli.ts.
+
+  const waiters = new Map<string, string[]>() // worktree path → requests waiting for the run's outcome
+  const ENDINGS: RunPhase[] = ['running', 'exited', 'failed', 'crashed', 'stopped']
+  const inboxDir = async () => join(await workDir(), 'requests')
+
+  /** Writes a file of shell assignments the command sources; renamed into place whole. */
+  async function answer(file: string, values: Record<string, string | number | undefined>): Promise<void> {
+    const dir = await inboxDir()
+    const body = Object.entries(values)
+      .map(([key, value]) => `${key}=${shellQuote(String(value ?? ''))}`)
+      .join('\n')
+    await writeFile(join(dir, `.${file}`), `${body}\n`, { mode: 0o600 })
+    await rename(join(dir, `.${file}`), join(dir, file))
+  }
+
+  function settleWaiters(path: string, run: RunState): void {
+    const ids = waiters.get(path)
+    if (!ids?.length || !ENDINGS.includes(run.phase)) return
+    waiters.delete(path)
+    for (const id of ids) {
+      void answer(`done-${id}.sh`, {
+        PHASE: run.phase,
+        MESSAGE: run.message,
+        ERRORS: (run.errors ?? []).join('\n'),
+        CRASH_TITLE: run.crashTitle,
+        CRASH_PATH: run.crashPath,
+        LOG_FILE: run.logPath
+      }).catch((e) => orca.log(`launchpad answer: ${(e as Error).message}`))
+    }
+  }
+
+  /** The Orca worktree that holds `cwd`: the deepest one, so a nested worktree wins. */
+  async function worktreeAt(cwd: string): Promise<WorkspaceInfo> {
+    const real = await realpath(cwd).catch(() => cwd)
+    const { workspaces } = await orca.host.call('workspace.list')
+    let best: { id: string; name: string; branch?: string | null; path: string } | undefined
+    for (const w of workspaces) {
+      for (const p of [w.path, await realpath(w.path).catch(() => w.path)]) {
+        if ((real === p || real.startsWith(`${p}/`)) && (!best || p.length > best.path.length)) best = { ...w, path: w.path }
+      }
+    }
+    if (!best) throw new Error(`${cwd} is not inside an Orca worktree`)
+    return { id: best.id, name: best.name, branch: best.branch ?? '', path: best.path }
+  }
+
+  /** The device `--device NAME` / `--simulator NAME` means. */
+  function destinationFor(devices: Device[], workspace: WorkspaceInfo, request: CliRequest): Device | undefined {
+    if (request.device !== undefined) {
+      const query = request.device.toLowerCase()
+      const iphones = devices.filter((d) => d.kind === 'device' && d.name.toLowerCase().includes(query))
+      const pick = iphones.find((d) => d.state === 'connected') ?? iphones[0]
+      if (!pick) {
+        const names = devices.filter((d) => d.kind === 'device').map((d) => d.name)
+        throw new Error(`No iPhone matches "${request.device}"${names.length ? ` (known: ${names.join(', ')})` : ''}`)
+      }
+      if (pick.state !== 'connected') throw new Error(`${pick.name} is not connected (plug it in, or join its Wi-Fi)`)
+      return pick
+    }
+    if (request.simulator !== undefined) {
+      const query = request.simulator.toLowerCase()
+      const sims = devices.filter((d) => d.kind === 'simulator' && d.name.toLowerCase().includes(query))
+      const pick = query ? sims.find((d) => d.state === 'booted') ?? sims[0] : preferredDestination(sims, worktreeSimulatorName(workspace.name))
+      if (!pick) throw new Error(`No simulator matches "${request.simulator}"`)
+      return pick
+    }
+    return undefined
+  }
+
+  const PHASE_WORDS: Record<RunPhase, string> = {
+    idle: 'no run yet',
+    preparing: 'preparing',
+    building: 'building',
+    installing: 'installing',
+    launching: 'launching',
+    running: 'running',
+    exited: 'the app exited',
+    stopped: 'stopped',
+    failed: 'failed',
+    crashed: 'crashed'
+  }
+
+  async function handleRequest(id: string, request: CliRequest): Promise<void> {
+    try {
+      if (request.cmd === 'devices') {
+        const { devices, error } = await listDevices()
+        const rows = devices.map((d) => `${d.kind === 'device' ? 'iPhone   ' : 'simulator'}  ${d.name} · ${d.kind === 'device' ? (d.state === 'connected' ? `iOS ${d.os} · ${d.transport === 'cable' ? 'cable' : 'Wi-Fi'}` : 'not connected') : `iOS ${d.os}${d.state === 'booted' ? ' · booted' : ''}`}`)
+        await answer(`res-${id}.sh`, { OK: 1, DEVICES: rows.join('\n') || error || 'No simulators or devices' })
+        return
+      }
+      const workspace = await worktreeAt(request.cwd ?? '/')
+      if (request.cmd === 'status') {
+        const run = runs.get(workspace.path) ?? { phase: 'idle' as const }
+        const detail =
+          run.phase === 'failed' ? [run.message, ...(run.errors ?? [])].filter(Boolean).join('\n')
+          : run.phase === 'crashed' ? run.crashTitle
+          : run.scheme ? `${run.scheme} → ${run.destinationName}` : ''
+        await answer(`res-${id}.sh`, { OK: 1, WORKSPACE: workspace.name, PHASE_LABEL: PHASE_WORDS[run.phase], DETAIL: detail })
+        return
+      }
+      if (request.cmd === 'stop') {
+        const run = runs.get(workspace.path)
+        const live = !!run && (isActive(run.phase) || run.phase === 'running')
+        await stopRun(workspace.path)
+        await answer(`res-${id}.sh`, { OK: 1, MESSAGE: live ? `Stopped ${run!.scheme} in ${workspace.name}` : `Nothing runs in ${workspace.name}` })
+        return
+      }
+      const projects = workspace.path === focused?.path ? focusedProjects : await findProjects(workspace.path)
+      const wantsDevice = request.device !== undefined || request.simulator !== undefined
+      const destination = wantsDevice ? destinationFor((await listDevices()).devices, workspace, request) : undefined
+      const run = await launch(workspace, projects, { destination, scheme: request.scheme, configuration: request.configuration })
+      waiters.set(workspace.path, [...(waiters.get(workspace.path) ?? []), id])
+      const config = await readConfig(workspace.path)
+      await publish()
+      await answer(`res-${id}.sh`, {
+        OK: 1,
+        WORKSPACE: workspace.name,
+        SCHEME: run.scheme,
+        CONFIGURATION: config.configuration,
+        DESTINATION: run.destinationName,
+        STATUS_FILE: await fileFor(workspace.path, 'status'),
+        OUT_FILE: run.outPath,
+        LOG_FILE: run.logPath
+      })
+    } catch (e) {
+      await answer(`res-${id}.sh`, { OK: 0, ERROR: (e as Error).message })
+    }
+  }
+
+  /** Writes the command, then looks for requests every second and marks itself alive. */
+  async function startInbox(): Promise<void> {
+    const dir = await inboxDir()
+    await mkdir(dir, { recursive: true, mode: 0o700 })
+    await chmod(dir, 0o700)
+    const cli = join(await workDir(), 'launchpad')
+    await writeFile(cli, `#!/bin/bash\n# launchpad: written by the Mobile Launchpad Orca plugin each time it starts.\nREQ_DIR=${shellQuote(dir)}\n${CLI_SCRIPT}`, 'utf8')
+    await chmod(cli, 0o755)
+    const alive = join(dir, '.alive')
+    let busy = false
+    every(POLL_MS, async () => {
+      if (busy) return
+      busy = true
+      try {
+        const now = new Date()
+        await utimes(alive, now, now).catch(() => writeFile(alive, ''))
+        for (const name of await readdir(dir)) {
+          const match = /^req-([\w-]+)\.txt$/.exec(name)
+          if (!match) continue
+          const file = join(dir, name)
+          const text = await readFile(file, 'utf8').catch(() => '')
+          await rm(file, { force: true })
+          const request = parseRequest(text)
+          if (request) void handleRequest(match[1]!, request)
+          else await answer(`res-${match[1]}.sh`, { OK: 0, ERROR: 'Unreadable request' })
+        }
+      } catch (e) {
+        orca.log(`launchpad inbox: ${(e as Error).message}`)
+      } finally {
+        busy = false
+      }
+    })
+  }
+
+  void restoreRuns()
+    .then(() => publish())
+    .catch((e) => orca.log(`restore runs: ${(e as Error).message}`))
+  void startInbox().catch((e) => orca.log(`launchpad inbox: ${(e as Error).message}`))
 
   orca.panels.handle('simulator.createForWorktree', async ({ baseUdid }) => {
     const workspace = await ensureFocused()

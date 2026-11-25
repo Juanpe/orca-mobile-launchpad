@@ -206,9 +206,25 @@ export async function startRun(request: RunRequest, outFile: string): Promise<nu
   }
 }
 
-/** The command an Orca terminal runs to show a run's output live, from its first line. */
-export function followCommand(outFile: string): string {
-  return `tail -n +1 -F ${shellQuote(outFile)}`
+/** Follows a run's output from its first line, and returns once the runner exits, so the terminal
+ *  goes back to its prompt (idle for Orca) instead of looking busy forever. */
+const FOLLOW_SCRIPT = `#!/bin/bash
+# Mobile Launchpad: shows a run's output until the run ends. Written by the plugin.
+tail -n +1 -f "$1" &
+T=$!
+while kill -0 "$2" 2> /dev/null; do sleep 1; done
+sleep 1
+kill "$T" 2> /dev/null
+wait "$T" 2> /dev/null
+exit 0
+`
+
+/** The command an Orca terminal runs to show a run's output live while the run lasts. */
+export async function followCommand(outFile: string, pid: number): Promise<string> {
+  const script = join(await workDir(), 'follow.sh')
+  await writeFile(script, FOLLOW_SCRIPT, 'utf8')
+  await chmod(script, 0o755)
+  return `${shellQuote(script)} ${shellQuote(outFile)} ${pid}`
 }
 
 /** Stops a run started by `startRun`: the runner and everything it started (xcodebuild,

@@ -1,6 +1,7 @@
 // Runs the worker over a mock host and a throwaway worktree folder with an Xcode project in it.
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { assert, mockHost, mountWorker, test } from 'orca/testing'
 import * as main from './worker'
@@ -220,6 +221,91 @@ test('closing the run terminal does not stop the build; Terminal opens a new one
     await worker.request('stop', {})
     assert.equal((await worker.request('state.get')).run.phase, 'stopped')
     await worker.deactivate()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+/** Runs the `launchpad` command the worker wrote, from `cwd`; answers its output and exit code. */
+function launchpad(cwd: string, ...args: string[]): Promise<{ code: number | null; out: string }> {
+  return new Promise((resolve) => {
+    const child = spawn('/bin/bash', [join(process.env.MOBILE_LAUNCHPAD_WORKDIR!, 'launchpad'), ...args], { cwd })
+    let out = ''
+    child.stdout.on('data', (b) => (out += b))
+    child.stderr.on('data', (b) => (out += b))
+    child.on('close', (code) => resolve({ code, out }))
+  })
+}
+
+const until = async (check: () => Promise<boolean>, ms = 8000) => {
+  const end = Date.now() + ms
+  while (!(await check())) {
+    if (Date.now() > end) throw new Error('timed out')
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+}
+
+test('launchpad run reports a failed build with its errors; status and stop work', async () => {
+  const root = await fakeWorktree()
+  try {
+    const host = hostFor(root, { 'terminal.create': { terminalId: 't-1' }, 'terminal.list': { terminals: [{ id: 't-1' }], truncated: false } })
+    const worker = await mountWorker(main, { host, events: ['workspace.changed'], commands: ['launchpad.run', 'launchpad.stop'] })
+    await worker.request('config.update', {
+      scheme: 'App',
+      destination: { platform: 'ios', kind: 'simulator', udid: 'SIM', name: 'iPhone 18 Pro' }
+    })
+    // The worker writes the command and marks itself alive within a second.
+    await until(async () => (await readdir(join(process.env.MOBILE_LAUNCHPAD_WORKDIR!, 'requests'))).includes('.alive'))
+
+    const running = launchpad(join(root, 'ios'), 'run')
+    await until(async () => (await worker.request('state.get')).run.phase === 'preparing')
+    const { logPath } = (await worker.request('state.get')).run
+    await writeFile(logPath!, '/a/b/Foo.swift:3:1: error: boom\n** BUILD FAILED **\n')
+    await writeFile(logPath!.replace(/build-(\w+)\.log$/, 'status-$1.txt'), 'failed:Build failed\n')
+    const result = await running
+    assert.equal(result.code, 1, result.out)
+    assert.match(result.out, /▸ App \(Debug\) → iPhone 18 Pro {2}\[bill-customer\]/)
+    assert.match(result.out, /✗ Build failed/)
+    assert.match(result.out, /Foo\.swift:3:1: error: boom/)
+
+    const status = await launchpad(root, 'status')
+    assert.equal(status.code, 0, status.out)
+    assert.match(status.out, /bill-customer: failed/)
+
+    const again = await launchpad(root, 'run', '--no-wait', '--configuration', 'Release')
+    assert.equal(again.code, 0, again.out)
+    assert.match(again.out, /App \(Release\)/)
+    const stop = await launchpad(root, 'stop')
+    assert.match(stop.out, /Stopped App in bill-customer/)
+    assert.equal((await worker.request('state.get')).run.phase, 'stopped')
+
+    const outside = await launchpad(tmpdir(), 'status')
+    assert.equal(outside.code, 1)
+    assert.match(outside.out, /not inside an Orca worktree/)
+    await worker.deactivate()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('runs survive a worker restart', async () => {
+  const root = await fakeWorktree()
+  try {
+    const results = { 'terminal.create': { terminalId: 't-1' }, 'terminal.list': { terminals: [{ id: 't-1' }], truncated: false } }
+    const host = hostFor(root, results)
+    const first = await mountWorker(main, { host, events: ['workspace.changed'], commands: ['launchpad.run', 'launchpad.stop'] })
+    await first.request('config.update', {
+      scheme: 'App',
+      destination: { platform: 'ios', kind: 'simulator', udid: 'SIM', name: 'iPhone 18 Pro' }
+    })
+    await first.request('run')
+    await new Promise((resolve) => setTimeout(resolve, 200)) // storage writes are queued
+    await first.deactivate()
+    // A new worker over the same storage (a reinstall) finds the run still going.
+    const second = await mountWorker(main, { host, events: ['workspace.changed'], commands: ['launchpad.run', 'launchpad.stop'] })
+    await until(async () => (await second.request('state.get')).run.phase === 'preparing', 3000)
+    await second.request('stop', {})
+    await second.deactivate()
   } finally {
     await rm(root, { recursive: true, force: true })
   }
