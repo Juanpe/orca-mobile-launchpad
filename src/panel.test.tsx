@@ -180,7 +180,7 @@ test('runs in other worktrees stay visible, with progress, navigation and stop',
   assert.match(summary, /No mobile app here/)
   assert.ok(view.find({ type: 'Heading', text: 'Other worktrees · 1' }))
   assert.ok(view.find({ type: 'Progress' }))
-  assert.ok(view.find({ type: 'Badge', text: '🤖 Android' }))
+  assert.ok(view.find({ type: 'Text', text: 'Android' }))
   await view.press({ type: 'Button', text: 'Terminal' })
   assert.deepEqual(shows, [{ path: '/w2', terminal: true }])
   await view.press({ type: 'Button', text: 'Stop' })

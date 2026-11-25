@@ -362,7 +362,11 @@ function OtherRunCard({ other, canNavigate }: { other: OtherRun; canNavigate: bo
           <Text weight="semibold" truncate>
             {run.scheme ?? workspace.name}
           </Text>
-          {run.platform ? <Badge>{run.platform === 'ios' ? '🍏 iOS' : '🤖 Android'}</Badge> : null}
+          {run.platform ? (
+            <Text muted size="xs">
+              {run.platform === 'ios' ? 'iOS' : 'Android'}
+            </Text>
+          ) : null}
         </Row>
         <Badge tone={phase.tone}>{phase.label}</Badge>
       </Row>
