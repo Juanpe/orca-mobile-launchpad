@@ -61,6 +61,8 @@ const devicesError = atom<string | undefined>(undefined)
 const busy = atom<string | null>(null)
 const error = atom<string | null>(null)
 const destinationTab = atom('destinationTab', 'simulators', { persist: 'plugin' })
+/** Whether the destination picker under the launch card is open; the card's chip toggles it. */
+const pickerOpen = atom('pickerOpen', true, { persist: 'plugin' })
 
 let schemesFor: string | undefined
 
@@ -201,15 +203,20 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
   const title = s.config.scheme ?? autoScheme(s) ?? projectName ?? 'App'
   // The branch says which worktree this is; fall back to the worktree's name without one.
   const branch = s.workspace?.branch ? `⎇ ${s.workspace.branch}` : s.workspace?.name ?? ''
-  const destinationTitle = destination?.name ?? 'Automatic destination'
-  const destinationDetail = !destination
-    ? 'The worktree simulator, or a booted one'
-    : device
-      ? `${device.kind === 'simulator' ? 'Simulator · ' : ''}${deviceDescription(device)}`
+  // "Juanpe’s iPhone 18 Pro" → "iPhone 18 Pro": the chip is narrow.
+  const shortName = destination?.name.replace(/^.*?[’']s\s+/, '')
+  const how = !destination
+    ? undefined
+    : device?.kind === 'device'
+      ? device.state === 'connected' ? transportLabel(device) : 'offline'
       : destination.kind === 'simulator'
-        ? 'Simulator'
-        : 'iPhone'
-  const destinationIcon = device ? deviceIcon(device) : destination?.kind === 'device' ? 'globe' : 'blocks'
+        ? device?.state === 'booted' ? 'booted' : 'sim'
+        : undefined
+  const chipText = `${shortName ?? 'Automatic'}${how ? ` · ${how}` : ''} ${read(pickerOpen) ? '▴' : '▾'}`
+  const chipIcon = device ? deviceIcon(device) : destination?.kind === 'device' ? 'globe' : 'blocks'
+  const chipTooltip = !destination
+    ? 'No destination chosen: runs on the worktree simulator or a booted one. Choose one.'
+    : `${destination.name}${device ? ` · ${deviceDescription(device)}` : ''}. Change destination.`
   const disabled = read(busy) !== null
   const frame = read(tick)
   const now = Date.now()
@@ -217,27 +224,56 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
   const celebrating = run.phase === 'running' && now - (run.phaseStartedAt ?? 0) < LAUNCH_CELEBRATION_MS
   return (
     <Box border={live || run.phase === 'failed' || run.phase === 'crashed' ? phase.tone : true} radius="lg" padding="md" background="card" gap="sm">
-      <Stack gap="none">
-        <Row justify="between" align="center" gap="sm">
-          <Row gap="xs" align="center">
-            <Heading level={1}>{title}</Heading>
-            <Badge tone="neutral">{s.config.configuration}</Badge>
-          </Row>
-          <Badge tone={phase.tone}>{phase.label}</Badge>
+      <Row justify="between" align="center" gap="sm">
+        <Row gap="xs" align="center">
+          <Heading level={1}>{title}</Heading>
+          <Badge tone="neutral">{s.config.configuration}</Badge>
         </Row>
-        <Text muted size="xs" truncate>
-          {branch}
-        </Text>
-      </Stack>
+        <Badge tone={phase.tone}>{phase.label}</Badge>
+      </Row>
 
-      <List label="Destination">
-        <ListItem
-          title={destinationTitle}
-          description={destinationDetail}
-          icon={destinationIcon}
-          onPress={() => set(destinationTab, destination?.kind === 'device' ? 'devices' : 'simulators')}
-        />
-      </List>
+      <Box direction="row" gap="xs" align="center">
+        <Box grow>
+          <Stack align="stretch">
+            <Button icon={chipIcon} variant="outline" tooltip={chipTooltip} onPress={() => update(pickerOpen, (open) => !open)}>
+              {chipText}
+            </Button>
+          </Stack>
+        </Box>
+        {live ? (
+          <IconButton
+            icon="refresh"
+            label="Relaunch"
+            tooltip="Relaunch (Mod+Alt+R)"
+            variant="solid"
+            tone="accent"
+            disabled={disabled}
+            onPress={() => guarded('run', async () => receive(await plugin.request('run', undefined, { timeoutMs: 120_000 })))}
+          />
+        ) : (
+          <Button
+            icon="play"
+            variant="solid"
+            tone="accent"
+            disabled={disabled}
+            tooltip="Build & Run (Mod+Alt+R)"
+            onPress={() => guarded('run', async () => receive(await plugin.request('run', undefined, { timeoutMs: 120_000 })))}
+          >
+            Run
+          </Button>
+        )}
+        {live ? (
+          <IconButton
+            icon="stop"
+            label="Stop"
+            tooltip="Stop"
+            variant="outline"
+            tone="danger"
+            disabled={disabled}
+            onPress={() => guarded('stop', async () => receive(await plugin.request('stop', {})))}
+          />
+        ) : null}
+      </Box>
 
       {active ? (
         <Stack gap="xs">
@@ -256,46 +292,19 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
           <Progress label={phase.label} labelHidden value={progress} />
         </Stack>
       ) : celebrating ? (
-        <Stack gap="xs">
-          <Text size="sm" weight="semibold" tone="success">
-            {`${frame % 4 < 2 ? '🚀' : '✨'} Launched on ${run.destinationName}!`}
-          </Text>
-          <Progress label="Launched" labelHidden value={100} />
-        </Stack>
+        <Text size="sm" weight="semibold" tone="success">
+          {`${frame % 4 < 2 ? '🚀' : '✨'} Launched on ${run.destinationName}!`}
+        </Text>
       ) : run.phase === 'running' && run.startedAt ? (
         <Text size="sm" tone="success">
-          {`● Running on ${run.destinationName} · `}
+          {'Running for '}
           <RelativeTime at={run.startedAt} format="short" />
         </Text>
       ) : null}
 
-      <Box direction="row" gap="xs" align="stretch">
-        <Box grow>
-          <Stack align="stretch">
-            <Button
-              icon={live ? 'refresh' : 'play'}
-              variant="solid"
-              tone="accent"
-              disabled={disabled}
-              tooltip="Mod+Alt+R"
-              onPress={() => guarded('run', async () => receive(await plugin.request('run', undefined, { timeoutMs: 120_000 })))}
-            >
-              {live ? 'Relaunch' : 'Build & Run'}
-            </Button>
-          </Stack>
-        </Box>
-        {live ? (
-          <IconButton
-            icon="stop"
-            label="Stop"
-            tooltip="Stop"
-            variant="outline"
-            tone="danger"
-            disabled={disabled}
-            onPress={() => guarded('stop', async () => receive(await plugin.request('stop', {})))}
-          />
-        ) : null}
-      </Box>
+      <Text muted size="xs" truncate>
+        {branch}
+      </Text>
     </Box>
   )
 }
@@ -462,9 +471,10 @@ function deviceIcon(d: Device) {
 }
 
 function choose(device: Device): void {
+  // Like a dropdown: picking closes the picker; the card's chip opens it again.
   void updateConfig('destination', {
     destination: { platform: device.platform, kind: device.kind, udid: device.udid, name: device.name }
-  })
+  }).then(() => set(pickerOpen, false))
 }
 
 function DeviceList({ label, items, selected }: { label: string; items: Device[]; selected?: string }) {
@@ -655,7 +665,7 @@ export default function Panel() {
         </Callout>
       ) : null}
       <BuildSettings s={s} />
-      <Destinations s={s} />
+      {read(pickerOpen) || !s.config.destination ? <Destinations s={s} /> : null}
     </Stack>
   )
 }
