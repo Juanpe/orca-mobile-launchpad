@@ -501,7 +501,7 @@ function Destinations({ s }: { s: LaunchpadState }) {
         </Text>
       ) : null}
       <Tabs label="Destination" value={read(destinationTab)} onChange={(v) => set(destinationTab, v)}>
-        <Tab value="simulators" label={`📱 Simulators · ${sims.length}`}>
+        <Tab value="simulators" label={`💻 Simulators · ${sims.length}`}>
           <Stack gap="sm">
             {booted.length > 0 ? <DeviceList label="Booted" items={booted} selected={selected} /> : null}
             {others.length > 0 ? (
@@ -531,7 +531,7 @@ function Destinations({ s }: { s: LaunchpadState }) {
             ) : null}
           </Stack>
         </Tab>
-        <Tab value="devices" label={`📲 Devices · ${connected}/${physical.length}`}>
+        <Tab value="devices" label={`📱 Devices · ${connected}/${physical.length}`}>
           {physical.length > 0 ? (
             <DeviceList label="Devices" items={physical} selected={selected} />
           ) : (
