@@ -10,7 +10,7 @@ declare module 'orca' {
     /** Schemes of the selected project (cached unless `refresh`). */
     'schemes.list': {
       input: { refresh?: boolean }
-      output: { schemes: string[]; appSchemes: string[]; error?: string }
+      output: { schemes: string[]; appSchemes: string[]; configurations?: string[]; error?: string }
     }
     /** Simulators and physical devices for the selected project's platform. */
     'devices.list': { output: { devices: Device[]; error?: string } }

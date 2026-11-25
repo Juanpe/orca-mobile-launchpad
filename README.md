@@ -1,8 +1,8 @@
 # Mobile Launchpad
 
 An [Orca](https://github.com/stablyai/orca) plugin to **Build & Run the active worktree's mobile app**
-on an iOS simulator or an iPhone connected by cable or Wi-Fi, from the status bar. It only shows up
-in worktrees that contain a mobile project (iOS today, Android next).
+on an iOS simulator, an Android emulator, or a phone connected by cable or Wi-Fi, from the status
+bar. It only shows up in worktrees that contain a mobile project (an Xcode project or a Gradle build).
 
 - **Status bar**: `🚀 MyApp · iPhone 18 Pro`. Click to build and run; while building it shows the
   phase and progress (`⠋ Building 42% · iPhone`), turns green while the app runs and red if it fails.
@@ -15,6 +15,9 @@ in worktrees that contain a mobile project (iOS today, Android next).
 - **Runs in other worktrees** stay visible: the panel lists them under "Other worktrees" with their
   progress, failure or crash, and Stop / Go to worktree / Terminal; the status bar adds
   `⠋ +1 elsewhere` (or shows `⠋ 1 building elsewhere` in a worktree without an app).
+- **iOS and Android**: a worktree with both apps shows an `iOS · Android` switch on the launch card;
+  each platform lists its own destinations (simulators and iPhones, or emulators and Android phones)
+  and its own build settings (scheme and configuration, or app module and build variant).
 - **Command palette**: `Mobile Launchpad: Build & Run` (`Mod+Alt+R`) and `Mobile Launchpad: Stop`.
 
 ## `launchpad` command (for agents)
@@ -97,11 +100,26 @@ Layout:
 - `src/panel.tsx`: the panel (Orca components, no build step).
 - `src/platforms/ios.ts`: the iOS adapter (projects, schemes, devices, run script).
 - `src/platforms/ios-parse.ts`: pure parsers for `simctl`, `devicectl` and `xcodebuild -list`.
+- `src/platforms/android.ts` / `android-parse.ts`: the Android adapter and its parsers (adb, Gradle).
+- `src/platforms/index.ts`: picks the adapter by the project's platform.
+- `src/platforms/runner.ts`: starts a run script in its own process group and follows its output.
 - `fixtures/demo-worktree`: a fake worktree for `orca plugin check` / `plugin shot --scenario demo`.
 
-## Android (next)
+## Android
 
-Platform logic lives in `src/platforms/`. An `android.ts` adapter would offer the same: detect
-`gradlew` + `settings.gradle(.kts)`, list with `adb devices -l` and `emulator -list-avds` (Wi-Fi via
-`adb pair`/`adb connect`), and launch with `./gradlew :app:installDebug` + `adb shell am start`. What
-is left is adding `'android'` to `Platform` and letting the worker pick the adapter per project.
+The worker looks for a Gradle build (`settings.gradle(.kts)` with at least one module that applies
+`com.android.application`) at the root or in `android/`, `androidApp/`, `mobile/android/`,
+`apps/android/`… The panel offers the app modules and their build variants (build types × product
+flavors, read from the module's build file), the AVDs (`emulator -list-avds`) and the phones
+`adb devices -l` sees, over USB or wireless debugging. The SDK comes from `ANDROID_HOME`,
+`ANDROID_SDK_ROOT` or `~/Library/Android/sdk`; Gradle gets Android Studio's JDK when `JAVA_HOME` is
+unset. The run script (`android-run.sh`):
+
+1. Emulator: starts the AVD in Orca's emulator pane (`orca emulator attach`), or with `emulator -avd`
+   when that does not work, and waits for `sys.boot_completed`.
+2. `./gradlew :module:assemble<Variant> --console=plain`.
+3. `adb install -r -t`, reads the package with `aapt2`, launches its launcher activity
+   (`am start -W`) and prints the app's `logcat` until its process ends.
+4. A crash in logcat's crash buffer marks the run crashed, with the exception in the panel.
+
+`launchpad run --android` (or `--ios`) picks the app when the worktree has both.

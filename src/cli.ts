@@ -10,6 +10,7 @@ export type CliRequest = {
   simulator?: string // present (maybe empty) with --simulator
   scheme?: string
   configuration?: string
+  platform?: 'ios' | 'android'
 }
 
 export function parseRequest(text: string): CliRequest | null {
@@ -24,6 +25,7 @@ export function parseRequest(text: string): CliRequest | null {
   for (const key of ['cwd', 'device', 'simulator', 'scheme', 'configuration'] as const) {
     if (key in fields) request[key] = fields[key]
   }
+  if (fields.platform === 'ios' || fields.platform === 'android') request.platform = fields.platform
   return request
 }
 
@@ -36,20 +38,22 @@ usage() {
   cat << 'USAGE'
 Usage: launchpad <command> [options]
 
-Builds and runs the app of the Orca worktree you are in, through the Mobile Launchpad plugin:
+Builds and runs the iOS or Android app of the Orca worktree you are in, through Mobile Launchpad:
 the run shows up in Orca's panel and status bar, and this command reports how it went.
 
 Commands:
   run        Build, install and launch. Exits once the app is running (or the run failed).
   status     The worktree's current run.
   stop       Stop the worktree's run: the build, or the app it launched.
-  devices    List the simulators and iPhones you can run on.
+  devices    List the simulators, emulators and phones you can run on.
 
 Options for run:
-  --device [NAME]        On an iPhone: the first connected one, or the one whose name has NAME.
-  --simulator [NAME]     On a simulator: the worktree's or a booted one, or the one whose name has NAME.
-  --scheme NAME          The Xcode scheme (default: the worktree's choice, or its app scheme).
-  --configuration NAME   Debug or Release (default: the worktree's choice).
+  --ios, --android       Which app, when the worktree has both (default: the one chosen in Orca).
+  --device [NAME]        On a phone: the first connected one, or the one whose name has NAME.
+  --simulator [NAME]     On a simulator (iOS) or emulator (Android): a running one, or the one
+                         whose name has NAME.
+  --scheme NAME          iOS: the Xcode scheme. Android: the app module, such as :app.
+  --configuration NAME   iOS: Debug or Release. Android: the build variant, such as debug.
   --follow               Print the build output as it goes (default: one line per step).
   --no-wait              Start the run and exit at once.
   What you pass becomes the worktree's choice in Orca's panel as well.
@@ -84,6 +88,7 @@ ask() {
     if [ "$HAS_SIM" = 1 ]; then printf 'simulator\t%s\n' "$SIM"; fi
     if [ -n "$SCHEME_ARG" ]; then printf 'scheme\t%s\n' "$SCHEME_ARG"; fi
     if [ -n "$CONFIG_ARG" ]; then printf 'configuration\t%s\n' "$CONFIG_ARG"; fi
+    if [ -n "$PLATFORM" ]; then printf 'platform\t%s\n' "$PLATFORM"; fi
   } > "$tmp"
   mv "$tmp" "$REQ_DIR/req-$ID.txt"
   local i=0
@@ -106,7 +111,7 @@ case "$CMD" in
   *) usage >&2; exit 4 ;;
 esac
 
-HAS_DEVICE=0; DEVICE=""; HAS_SIM=0; SIM=""; SCHEME_ARG=""; CONFIG_ARG=""; FOLLOW=0; WAIT=1
+HAS_DEVICE=0; DEVICE=""; HAS_SIM=0; SIM=""; SCHEME_ARG=""; CONFIG_ARG=""; PLATFORM=""; FOLLOW=0; WAIT=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --device)
@@ -117,6 +122,8 @@ while [ $# -gt 0 ]; do
       if [ $# -ge 2 ] && [ "$(printf '%s' "$2" | cut -c1-2)" != "--" ]; then SIM="$2"; shift; fi ;;
     --scheme) [ $# -ge 2 ] || die "--scheme needs a name"; SCHEME_ARG="$2"; shift ;;
     --configuration) [ $# -ge 2 ] || die "--configuration needs a name"; CONFIG_ARG="$2"; shift ;;
+    --ios) PLATFORM=ios ;;
+    --android) PLATFORM=android ;;
     --follow) FOLLOW=1 ;;
     --no-wait) WAIT=0 ;;
     -h | --help) usage; exit 0 ;;

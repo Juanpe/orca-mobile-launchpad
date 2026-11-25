@@ -137,7 +137,7 @@ export function schemeBuildsApp(xml: string): boolean {
   return /BuildableName\s*=\s*"[^"]+\.app"/.test(xml)
 }
 
-/** The lines worth showing from a failed `xcodebuild` log: compiler and linker errors first,
+/** The lines worth showing from a failed `xcodebuild` or Gradle log: compiler and linker errors first,
  *  then the build's own summary, without duplicates. */
 export function extractBuildErrors(log: string, max = 12): string[] {
   const seen = new Set<string>()
@@ -145,13 +145,14 @@ export function extractBuildErrors(log: string, max = 12): string[] {
   for (const raw of log.split('\n')) {
     const line = raw.trim()
     if (
-      !/(\berror:|❌|fatal error|\*\* BUILD FAILED \*\*|Command \w+ failed|xcodebuild: error|✗ )/.test(line) ||
+      // xcodebuild, then Gradle: Kotlin's `e: file:///…`, javac/aapt `ERROR:`, Gradle's summary.
+      !/(\berror:|❌|fatal error|\*\* BUILD FAILED \*\*|Command \w+ failed|xcodebuild: error|✗ |^e: |^ERROR:|FAILURE: Build failed|^> Task \S+ FAILED|^> (?!Task |Configure ))/.test(line) ||
       /^\s*$/.test(line)
     ) {
       continue
     }
     // Make absolute paths short: keep the file name and position.
-    const short = line.replace(/\/(?:[^/\s:]+\/)+([^/\s:]+:\d+(?::\d+)?)/g, '$1')
+    const short = line.replace(/file:\/\//g, '').replace(/\/(?:[^/\s:]+\/)+([^/\s:]+:\d+(?::\d+)?)/g, '$1')
     if (seen.has(short)) continue
     seen.add(short)
     out.push(short.length > 300 ? `${short.slice(0, 300)}…` : short)

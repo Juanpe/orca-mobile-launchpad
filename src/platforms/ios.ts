@@ -1,11 +1,9 @@
 // The iOS adapter: finding Xcode projects, listing destinations, and the script a run executes.
 // An Android adapter would offer the same functions over Gradle and adb.
-import { spawn } from 'node:child_process'
-import { openSync, closeSync } from 'node:fs'
-import { mkdir, readdir, readFile, rm, writeFile, chmod } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { readdir, readFile, rm } from 'node:fs/promises'
 import { dirname, join, relative } from 'node:path'
-import { exec, shellQuote } from '../exec'
+import { exec } from '../exec'
+import { spawnRunner, workDir, writeScript } from './runner'
 import type { Destination, Device, ProjectRef } from '../types'
 import { parseDevicectlDevices, parseSchemes, parseSimctlDevices, schemeBuildsApp } from './ios-parse'
 
@@ -147,14 +145,6 @@ export async function createSimulator(name: string, base: Device): Promise<strin
   return stdout.trim()
 }
 
-/** Where Launchpad keeps its runner script and status files. */
-export async function workDir(): Promise<string> {
-  // Tests point it elsewhere (MOBILE_LAUNCHPAD_WORKDIR) so they never touch real runs' files.
-  const dir = process.env.MOBILE_LAUNCHPAD_WORKDIR || join(tmpdir(), 'orca-launchpad')
-  await mkdir(dir, { recursive: true })
-  return dir
-}
-
 export type RunRequest = {
   projectPath: string
   scheme: string
@@ -172,9 +162,7 @@ export type RunRequest = {
  * terminal follows (`followCommand`). Answers the group's pid for `stopProcessGroup`.
  */
 export async function startRun(request: RunRequest, outFile: string): Promise<number> {
-  const script = join(await workDir(), 'ios-run.sh')
-  await writeFile(script, RUN_SCRIPT, 'utf8')
-  await chmod(script, 0o755)
+  const script = await writeScript('ios-run.sh', RUN_SCRIPT)
   const args = [
     request.statusFile,
     request.destination.kind,
@@ -186,64 +174,7 @@ export async function startRun(request: RunRequest, outFile: string): Promise<nu
     request.openSimulatorApp ? '1' : '0',
     request.logFile
   ]
-  const out = openSync(outFile, 'w')
-  try {
-    // Tests swap the runner for a stand-in (MOBILE_LAUNCHPAD_RUNNER) instead of running xcodebuild.
-    const runner = process.env.MOBILE_LAUNCHPAD_RUNNER || script
-    // A login shell gives the runner the person's PATH (orca, xcbeautify) as a terminal would.
-    const child = spawn('/bin/zsh', ['-lc', 'exec /bin/bash "$@"', 'mobile-launchpad', runner, ...args], {
-      cwd: dirname(request.projectPath),
-      detached: true,
-      stdio: ['ignore', out, out],
-      // Orca's own CLI in PATH lets the runner open the emulator pane.
-      env: { ...process.env, TERM: 'xterm-256color' }
-    })
-    child.unref()
-    if (!child.pid) throw new Error('Could not start the build')
-    return child.pid
-  } finally {
-    closeSync(out)
-  }
-}
-
-/** Follows a run's output from its first line, and returns once the runner exits, so the terminal
- *  goes back to its prompt (idle for Orca) instead of looking busy forever. */
-const FOLLOW_SCRIPT = `#!/bin/bash
-# Mobile Launchpad: shows a run's output until the run ends. Written by the plugin.
-tail -n +1 -f "$1" &
-T=$!
-while kill -0 "$2" 2> /dev/null; do sleep 1; done
-sleep 1
-kill "$T" 2> /dev/null
-wait "$T" 2> /dev/null
-exit 0
-`
-
-/** The command an Orca terminal runs to show a run's output live while the run lasts. */
-export async function followCommand(outFile: string, pid: number): Promise<string> {
-  const script = join(await workDir(), 'follow.sh')
-  await writeFile(script, FOLLOW_SCRIPT, 'utf8')
-  await chmod(script, 0o755)
-  return `${shellQuote(script)} ${shellQuote(outFile)} ${pid}`
-}
-
-/** Stops a run started by `startRun`: the runner and everything it started (xcodebuild,
- *  simctl, devicectl). The runner's trap marks the run `stopped`. */
-export function stopProcessGroup(pid: number): void {
-  try {
-    process.kill(-pid, 'SIGTERM')
-  } catch {
-    // Already gone.
-  }
-}
-
-export function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM'
-  }
+  return spawnRunner(script, args, dirname(request.projectPath), outFile)
 }
 
 /**

@@ -1,15 +1,17 @@
 // Shapes shared by the worker, the panel and the platform adapters. Plain JSON only: they cross
 // the panel <-> worker bridge and live in orca.storage.
 
-/** Platforms Launchpad knows how to build. Android comes next (see README). */
-export type Platform = 'ios'
+/** Platforms Launchpad knows how to build. */
+export type Platform = 'ios' | 'android'
 
+/** `simulator` is an iOS simulator or an Android emulator. */
 export type DestinationKind = 'simulator' | 'device'
 
 /** What a workspace remembers as "run here". */
 export type Destination = {
   platform: Platform
   kind: DestinationKind
+  /** iOS: the UDID. Android: the AVD name for an emulator, the adb serial for a device. */
   udid: string
   name: string
 }
@@ -25,18 +27,23 @@ export type Device = Destination & {
   runtimeId?: string
 }
 
-/** An Xcode workspace or project found in the worktree. `path` is absolute. */
+/** An Xcode workspace or project, or a Gradle build, found in the worktree. `path` is absolute:
+ *  the .xcworkspace/.xcodeproj, or the folder with settings.gradle(.kts). */
 export type ProjectRef = {
   platform: Platform
-  kind: 'workspace' | 'project'
+  kind: 'workspace' | 'project' | 'gradle'
   path: string
   /** Path relative to the worktree, for display. */
   label: string
+  /** Gradle's rootProject.name, the app's name on Android. */
+  name?: string
 }
 
 export type WorkspaceConfig = {
   project?: string
+  /** iOS: the Xcode scheme. Android: the app module, such as `:app`. */
   scheme?: string
+  /** iOS: Debug or Release. Android: the build variant, such as `debug`. */
   configuration: string
   destination?: Destination
 }

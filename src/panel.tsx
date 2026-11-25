@@ -31,6 +31,7 @@ import {
 } from 'orca'
 import './protocol'
 import { preferredScheme } from './platforms/ios-parse'
+import { preferredModule } from './platforms/android-parse'
 import { progressOf } from './progress'
 export { progressOf } from './progress'
 import {
@@ -39,6 +40,7 @@ import {
   type Device,
   type LaunchpadState,
   type OtherRun,
+  type Platform,
   type RunPhase,
   type WorkspaceConfig
 } from './types'
@@ -53,8 +55,23 @@ const tick = atom(0)
 function autoScheme(s: LaunchpadState): string | undefined {
   const list = read(schemes)
   if (!list || !s.config.project) return undefined
-  return preferredScheme(list, s.config.project, read(appSchemes))
+  return platformOf(s) === 'android' ? preferredModule(read(appSchemes)) : preferredScheme(list, s.config.project, read(appSchemes))
 }
+
+/** The platform of the worktree's chosen project. */
+function platformOf(s: LaunchpadState): Platform {
+  return (s.projects.find((p) => p.path === s.config.project) ?? s.projects[0])?.platform ?? 'ios'
+}
+
+/** How a scheme or module reads: Android's `:app` is the app itself, named by the Gradle build. */
+function targetLabel(s: LaunchpadState, target: string): string {
+  if (!target.startsWith(':')) return target
+  const project = s.projects.find((p) => p.path === s.config.project)
+  return target === ':app' && project?.name ? project.name : target.slice(1)
+}
+
+/** Configurations (iOS) or build variants (Android) the worker offers for the project. */
+const configurations = atom<string[] | null>(null)
 const schemesError = atom<string | undefined>(undefined)
 const devices = atom<Device[] | null>(null)
 const devicesError = atom<string | undefined>(undefined)
@@ -84,6 +101,7 @@ async function loadSchemes(refresh = false): Promise<void> {
     const answer = await plugin.request('schemes.list', { refresh }, { timeoutMs: 120_000 })
     set(schemes, answer.schemes)
     set(appSchemes, answer.appSchemes ?? [])
+    set(configurations, answer.configurations?.length ? answer.configurations : null)
     set(schemesError, answer.error)
   } catch (e) {
     set(schemes, [])
@@ -200,7 +218,10 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
   const project = s.projects.find((p) => p.path === s.config.project) ?? s.projects[0]
   const projectName = project?.label.split('/').pop()?.replace(/\.(xcworkspace|xcodeproj)$/, '')
   // Without a chosen scheme, the worker runs the first app scheme: name it.
-  const title = s.config.scheme ?? autoScheme(s) ?? projectName ?? 'App'
+  const target = s.config.scheme ?? autoScheme(s)
+  const title = target ? targetLabel(s, target) : project?.name ?? projectName ?? 'App'
+  const platform = platformOf(s)
+  const platforms = Array.from(new Set(s.projects.map((p) => p.platform)))
   // The branch says which worktree this is; fall back to the worktree's name without one.
   const branch = s.workspace?.branch ? `⎇ ${s.workspace.branch}` : s.workspace?.name ?? ''
   // "Juanpe’s iPhone 18 Pro" → "iPhone 18 Pro": the chip is narrow.
@@ -210,7 +231,7 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
     : device?.kind === 'device'
       ? device.state === 'connected' ? transportLabel(device) : 'offline'
       : destination.kind === 'simulator'
-        ? device?.state === 'booted' ? 'booted' : 'sim'
+        ? device?.state === 'booted' ? (platform === 'android' ? 'running' : 'booted') : platform === 'android' ? 'emulator' : 'sim'
         : undefined
   const chipText = `${shortName ?? 'Automatic'}${how ? ` · ${how}` : ''} ${read(pickerOpen) ? '▴' : '▾'}`
   const chipIcon = device ? deviceIcon(device) : destination?.kind === 'device' ? 'globe' : 'blocks'
@@ -224,6 +245,20 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
   const celebrating = run.phase === 'running' && now - (run.phaseStartedAt ?? 0) < LAUNCH_CELEBRATION_MS
   return (
     <Box border={live || run.phase === 'failed' || run.phase === 'crashed' ? phase.tone : true} radius="lg" padding="md" background="card" gap="sm">
+      {platforms.length > 1 ? (
+        <Row gap="xs">
+          {platforms.map((p) => (
+            <Button
+              size="sm"
+              variant={p === platform ? 'solid' : 'ghost'}
+              disabled={read(busy) !== null || p === platform}
+              onPress={() => updateConfig('platform', { project: s.projects.find((x) => x.platform === p)!.path })}
+            >
+              {p === 'ios' ? '🍏 iOS' : '🤖 Android'}
+            </Button>
+          ))}
+        </Row>
+      ) : null}
       <Row justify="between" align="center" gap="sm">
         <Row gap="xs" align="center">
           <Heading level={1}>{title}</Heading>
@@ -443,7 +478,11 @@ function SchemeWarning({ s }: { s: LaunchpadState }) {
   return (
     <Callout tone="warning" title={`${scheme} doesn't build an app`} icon="warning">
       <Stack gap="xs">
-        <Text size="sm">It looks like a library or package scheme, so there is nothing to install.</Text>
+        <Text size="sm">
+          {platformOf(s) === 'android'
+            ? 'It is a library module, so there is nothing to install.'
+            : 'It looks like a library or package scheme, so there is nothing to install.'}
+        </Text>
         <Row gap="xs" wrap>
           {apps.slice(0, 3).map((app) => (
             <Button size="sm" variant="outline" icon="check" onPress={() => updateConfig('scheme', { scheme: app })}>
@@ -459,6 +498,11 @@ function SchemeWarning({ s }: { s: LaunchpadState }) {
 // ── Destinations ──────────────────────────────────────────────────────────────────────────────
 
 function deviceDescription(d: Device): string {
+  if (d.platform === 'android') {
+    const os = !d.os || /^API /.test(d.os) ? d.os || 'Android' : `Android ${d.os}`
+    if (d.kind === 'device') return d.state === 'connected' ? `${os} · ${transportLabel(d)}` : d.os === 'unauthorized' ? 'allow USB debugging on the phone' : 'not connected'
+    return d.state === 'booted' ? `${os} · running` : os
+  }
   if (d.kind === 'device') {
     return d.state === 'connected' ? `iOS ${d.os} · ${transportLabel(d)}` : `iOS ${d.os} · not connected`
   }
@@ -522,8 +566,11 @@ function Destinations({ s }: { s: LaunchpadState }) {
       </Stack>
     )
   }
-  const physical = list.filter((d) => d.kind === 'device')
-  const sims = list.filter((d) => d.kind === 'simulator')
+  const platform = platformOf(s)
+  const android = platform === 'android'
+  const mine = list.filter((d) => d.platform === platform)
+  const physical = mine.filter((d) => d.kind === 'device')
+  const sims = mine.filter((d) => d.kind === 'simulator')
   const booted = sims.filter((d) => d.state === 'booted')
   const others = sims.filter((d) => d.state !== 'booted')
   const worktreeSim = s.workspace ? worktreeSimulatorName(s.workspace.name) : ''
@@ -539,18 +586,21 @@ function Destinations({ s }: { s: LaunchpadState }) {
         </Text>
       ) : null}
       <Tabs label="Destination" value={read(destinationTab)} onChange={(v) => set(destinationTab, v)}>
-        <Tab value="simulators" label={`💻 Simulators · ${sims.length}`}>
+        <Tab value="simulators" label={`💻 ${android ? 'Emulators' : 'Simulators'} · ${sims.length}`}>
           <Stack gap="sm">
-            {booted.length > 0 ? <DeviceList label="Booted" items={booted} selected={selected} /> : null}
+            {booted.length > 0 ? <DeviceList label={android ? 'Running' : 'Booted'} items={booted} selected={selected} /> : null}
+            {android && sims.length === 0 ? (
+              <EmptyState icon="blocks" title="No emulators" description="Create one in Android Studio (Device Manager)." />
+            ) : null}
             {others.length > 0 ? (
               <Collapsible
-                title={`Other simulators (${others.length})`}
+                title={`${booted.length ? 'Other ' : ''}${android ? 'emulators' : 'simulators'} (${others.length})`}
                 defaultOpen={booted.length === 0 || others.some((d) => d.udid === selected)}
               >
-                <DeviceList label="Other simulators" items={others} selected={selected} />
+                <DeviceList label={android ? 'Other emulators' : 'Other simulators'} items={others} selected={selected} />
               </Collapsible>
             ) : null}
-            {!hasWorktreeSim && base && s.workspace ? (
+            {!android && !hasWorktreeSim && base && s.workspace ? (
               <Button
                 variant="outline"
                 icon="add"
@@ -576,7 +626,11 @@ function Destinations({ s }: { s: LaunchpadState }) {
             <EmptyState
               icon="globe"
               title="No devices"
-              description="Connect your iPhone by cable, or pair it over Wi-Fi in Xcode (Window → Devices and Simulators)."
+              description={
+                android
+                  ? 'Connect your phone by USB with USB debugging on, or pair it over Wi-Fi (Developer options → Wireless debugging).'
+                  : 'Connect your iPhone by cable, or pair it over Wi-Fi in Xcode (Window → Devices and Simulators).'
+              }
             />
           )}
         </Tab>
@@ -593,32 +647,35 @@ function BuildSettings({ s }: { s: LaunchpadState }) {
   const schemeOptions = [...(schemeList ?? (s.config.scheme ? [s.config.scheme] : []))]
     .sort((a, b) => Number(apps.includes(b)) - Number(apps.includes(a)))
     .map((x) => ({ value: x, label: apps.includes(x) ? `${x} · app` : x }))
-  const configurations = Array.from(new Set(['Debug', 'Release', s.config.configuration]))
+  const android = platformOf(s) === 'android'
+  const offered = read(configurations) ?? (android ? ['debug', 'release'] : ['Debug', 'Release'])
+  const configurationList = Array.from(new Set([...offered, s.config.configuration]))
+  const auto = autoScheme(s)
   const project = s.projects.find((p) => p.path === s.config.project) ?? s.projects[0]!
   return (
     <Collapsible
       title="Build"
-      description={`${project.label} · ${s.config.scheme ?? (autoScheme(s) ? `${autoScheme(s)} (auto)` : 'automatic scheme')} · ${s.config.configuration}`}
+      description={`${project.label} · ${s.config.scheme ?? (auto ? `${auto} (auto)` : android ? 'automatic module' : 'automatic scheme')} · ${s.config.configuration}`}
     >
       <Stack gap="sm">
         {s.projects.length > 1 ? (
           <Select
             label="Project"
             value={s.config.project}
-            options={s.projects.map((p) => ({ value: p.path, label: p.label }))}
+            options={s.projects.map((p) => ({ value: p.path, label: `${p.platform === 'ios' ? 'iOS' : 'Android'} · ${p.label}` }))}
             onChange={(value) => updateConfig('project', { project: value })}
           />
         ) : null}
         <Row gap="xs" align="end">
           <Select
-            label="Scheme"
+            label={android ? 'Module' : 'Scheme'}
             value={s.config.scheme}
-            placeholder={schemeList === null ? 'Reading schemes…' : 'Automatic'}
+            placeholder={schemeList === null ? (android ? 'Reading modules…' : 'Reading schemes…') : 'Automatic'}
             options={schemeOptions}
             disabled={schemeList === null}
             onChange={(scheme) => updateConfig('scheme', { scheme })}
           />
-          <IconButton icon="refresh" label="Reload schemes" variant="ghost" onPress={() => loadSchemes(true)} />
+          <IconButton icon="refresh" label={android ? 'Reload modules' : 'Reload schemes'} variant="ghost" onPress={() => loadSchemes(true)} />
         </Row>
         {read(schemesError) ? (
           <Text tone="warning" size="xs">
@@ -626,9 +683,9 @@ function BuildSettings({ s }: { s: LaunchpadState }) {
           </Text>
         ) : null}
         <Select
-          label="Configuration"
+          label={android ? 'Variant' : 'Configuration'}
           value={s.config.configuration}
-          options={configurations.map((c) => ({ value: c, label: c }))}
+          options={configurationList.map((c) => ({ value: c, label: c }))}
           onChange={(configuration) => updateConfig('configuration', { configuration })}
         />
       </Stack>
@@ -656,7 +713,7 @@ export default function Panel() {
         <EmptyState
           icon="rocket"
           title="No mobile app here"
-          description={`${s.workspace.name} has no iOS project at its root or in ios/, app/ or mobile/ios.`}
+          description={`${s.workspace.name} has no Xcode project or Gradle build at its root or in ios/, android/, app/ or mobile/.`}
         />
         <OtherRuns s={s} />
       </Stack>

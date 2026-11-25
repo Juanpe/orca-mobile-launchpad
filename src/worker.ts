@@ -8,25 +8,21 @@ import { CLI_SCRIPT, parseRequest, type CliRequest } from './cli'
 import { join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
 import './protocol'
+import { createSimulator } from './platforms/ios'
 import {
-  createSimulator,
+  DEFAULT_CONFIGURATION,
+  defaultDestination,
+  defaultTarget,
   findProjects,
-  listAppSchemes,
+  listConfigurations,
   listDevices,
-  listSchemes,
-  followCommand,
-  isAlive,
+  listTargets,
+  platformOf,
   startRun,
-  stopProcessGroup,
-  workDir
-} from './platforms/ios'
-import {
-  extractBuildErrors,
-  logTail,
-  preferredDestination,
-  preferredScheme,
-  summarizeCrash
-} from './platforms/ios-parse'
+  summarizeCrashFile
+} from './platforms'
+import { followCommand, isAlive, stopProcessGroup, workDir } from './platforms/runner'
+import { extractBuildErrors, logTail } from './platforms/ios-parse'
 import {
   isActive,
   worktreeSimulatorName,
@@ -37,7 +33,8 @@ import {
   type RunPhase,
   type RunState,
   type WorkspaceConfig,
-  type WorkspaceInfo
+  type WorkspaceInfo,
+  type Platform
 } from './types'
 
 const STATUS_ITEM = 'run'
@@ -262,8 +259,7 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   async function schemesFor(project: string, refresh = false): Promise<{ schemes: string[]; appSchemes: string[] }> {
     if (!refresh && schemeCache.has(project)) return schemeCache.get(project)!
-    const [schemes, appSchemes] = await Promise.all([listSchemes(project), listAppSchemes(project)])
-    const entry = { schemes, appSchemes }
+    const entry = await listTargets(platformOf(project), project)
     schemeCache.set(project, entry)
     return entry
   }
@@ -326,7 +322,7 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   async function crashDetails(crashPath: string): Promise<Partial<RunState>> {
     try {
-      const { title, summary } = summarizeCrash(await readFile(crashPath, 'utf8'))
+      const { title, summary } = summarizeCrashFile(crashPath, await readFile(crashPath, 'utf8'))
       return { crashPath, crashTitle: title, crashSummary: summary.slice(0, 12_000) }
     } catch (e) {
       orca.log(`crash report ${crashPath}: ${(e as Error).message}`)
@@ -422,31 +418,57 @@ export default function activate(orca: OrcaWorkerApi): void {
     return (await orca.host.call('terminal.focus', { terminalId: terminalId! })).focused
   }
 
-  type Overrides = { destination?: Device; scheme?: string; configuration?: string }
+  type Overrides = { destination?: Device; scheme?: string; configuration?: string; platform?: Platform }
+
+  /** Makes `project` the worktree's project; scheme, variant and destination start over when the
+   *  platform changes. */
+  async function switchProject(path: string, project: ProjectRef): Promise<WorkspaceConfig> {
+    const current = await readConfig(path)
+    const samePlatform = platformOf(current.project) === project.platform && !!current.project
+    return writeConfig(path, {
+      project: project.path,
+      scheme: undefined,
+      ...(samePlatform ? {} : { configuration: DEFAULT_CONFIGURATION[project.platform], destination: undefined })
+    })
+  }
 
   /** The config a worktree runs with: its saved one, its first project, and the scheme and
    *  destination picked automatically when none is chosen; `overrides` are saved as well. */
   async function runConfig(workspace: WorkspaceInfo, projects: ProjectRef[], overrides: Overrides = {}): Promise<WorkspaceConfig> {
     let config = await readConfig(workspace.path)
-    if (!config.project || !projects.some((p) => p.path === config.project)) {
-      if (!projects[0]) throw Object.assign(new Error('No Xcode project found in this worktree'), { code: 'action_failed' })
-      config = await writeConfig(workspace.path, { project: projects[0].path, scheme: undefined })
+    if (overrides.platform) {
+      const wanted = projects.find((p) => p.platform === overrides.platform)
+      if (!wanted) throw Object.assign(new Error(`No ${overrides.platform === 'ios' ? 'iOS' : 'Android'} project in this worktree`), { code: 'action_failed' })
+      if (platformOf(config.project, projects) !== overrides.platform) config = await switchProject(workspace.path, wanted)
     }
+    if (!config.project || !projects.some((p) => p.path === config.project)) {
+      if (!projects[0]) throw Object.assign(new Error('No iOS or Android project found in this worktree'), { code: 'action_failed' })
+      config = await switchProject(workspace.path, projects[0])
+    }
+    const platform = platformOf(config.project, projects)
     const patch: Partial<WorkspaceConfig> = {}
     if (overrides.scheme) patch.scheme = overrides.scheme
     if (overrides.configuration) patch.configuration = overrides.configuration
     if (overrides.destination) patch.destination = pickDestination(overrides.destination)
     if (Object.keys(patch).length) config = await writeConfig(workspace.path, patch)
     if (!config.scheme) {
-      const { schemes, appSchemes } = await schemesFor(config.project!)
-      const scheme = preferredScheme(schemes, config.project!, appSchemes)
-      if (!scheme) throw Object.assign(new Error('The project has no shared schemes'), { code: 'action_failed' })
+      const scheme = defaultTarget(platform, config.project!, await schemesFor(config.project!))
+      if (!scheme) {
+        throw Object.assign(new Error(platform === 'android' ? 'The Gradle build has no app module' : 'The project has no shared schemes'), { code: 'action_failed' })
+      }
       config = await writeConfig(workspace.path, { scheme })
     }
-    if (!config.destination) {
+    // A variant or destination from the other platform (or another build) does not apply.
+    const configurations = await listConfigurations(platform, config.project!, config.scheme)
+    if (!configurations.includes(config.configuration)) {
+      config = await writeConfig(workspace.path, { configuration: configurations.includes(DEFAULT_CONFIGURATION[platform]) ? DEFAULT_CONFIGURATION[platform] : configurations[0]! })
+    }
+    if (!config.destination || config.destination.platform !== platform) {
       const { devices } = await listDevices()
-      const device = preferredDestination(devices, worktreeSimulatorName(workspace.name))
-      if (!device) throw Object.assign(new Error('No simulators or devices available'), { code: 'action_failed' })
+      const device = defaultDestination(platform, devices, workspace.name)
+      if (!device) {
+        throw Object.assign(new Error(platform === 'android' ? 'No Android emulators or phones (create an AVD in Android Studio)' : 'No simulators or devices available'), { code: 'action_failed' })
+      }
       config = await writeConfig(workspace.path, { destination: pickDestination(device) })
     }
     return config
@@ -465,20 +487,17 @@ export default function activate(orca: OrcaWorkerApi): void {
     const estimate = await orca.storage.get(buildTimeKey(workspace.path))
     const pid = await startRun(
       {
-        projectPath: config.project!,
-        scheme: config.scheme!,
-        configuration: config.configuration,
-        destination: config.destination!,
+        platform: platformOf(config.project, projects),
+        config: { project: config.project!, scheme: config.scheme!, configuration: config.configuration, destination: config.destination! },
         statusFile,
-        logFile,
-        openSimulatorApp: true
+        logFile
       },
       outFile
     )
     // The terminal only follows the output: closing it does not touch the build.
     const { terminalId } = await orca.host.call('terminal.create', {
       workspaceId: workspace.id,
-      title: `▶ ${config.scheme}`,
+      title: `▶ ${displayTarget(config.scheme!)}`,
       command: await followCommand(outFile, pid)
     })
     const now = Date.now()
@@ -492,7 +511,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       outPath: outFile,
       pid,
       terminalId,
-      scheme: config.scheme,
+      scheme: displayTarget(config.scheme!, projects.find((p) => p.path === config.project)),
       destinationName: config.destination!.name
     })
     startPolling(workspace, statusFile)
@@ -541,11 +560,14 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   orca.panels.handle('schemes.list', async ({ refresh }) => {
     const s = await state()
-    if (!s.config.project) return { schemes: [], appSchemes: [] }
+    if (!s.config.project) return { schemes: [], appSchemes: [], configurations: [] }
+    const platform = platformOf(s.config.project, s.projects)
     try {
-      return await schemesFor(s.config.project, refresh)
+      const targets = await schemesFor(s.config.project, refresh)
+      const target = s.config.scheme ?? defaultTarget(platform, s.config.project, targets)
+      return { ...targets, configurations: await listConfigurations(platform, s.config.project, target) }
     } catch (e) {
-      return { schemes: [], appSchemes: [], error: (e as Error).message }
+      return { schemes: [], appSchemes: [], configurations: [], error: (e as Error).message }
     }
   })
 
@@ -557,8 +579,16 @@ export default function activate(orca: OrcaWorkerApi): void {
     const cleared = Object.fromEntries(
       Object.entries(patch).map(([k, v]) => [k, v === null ? undefined : v])
     ) as Partial<WorkspaceConfig>
-    const clean = cleared.project !== undefined && !('scheme' in patch) ? { ...cleared, scheme: undefined } : cleared
-    await writeConfig(workspace.path, clean)
+    if (cleared.project !== undefined && !('scheme' in patch)) {
+      const project = focusedProjects.find((p) => p.path === cleared.project)
+      if (project) {
+        await switchProject(workspace.path, project)
+        delete cleared.project
+      } else {
+        cleared.scheme = undefined
+      }
+    }
+    await writeConfig(workspace.path, cleared)
     return publish()
   })
 
@@ -631,14 +661,16 @@ export default function activate(orca: OrcaWorkerApi): void {
   }
 
   /** The device `--device NAME` / `--simulator NAME` means. */
-  function destinationFor(devices: Device[], workspace: WorkspaceInfo, request: CliRequest): Device | undefined {
+  function destinationFor(all: Device[], platform: Platform, workspace: WorkspaceInfo, request: CliRequest): Device | undefined {
+    const devices = all.filter((d) => d.platform === platform)
+    const phone = platform === 'ios' ? 'iPhone' : 'Android phone'
     if (request.device !== undefined) {
       const query = request.device.toLowerCase()
-      const iphones = devices.filter((d) => d.kind === 'device' && d.name.toLowerCase().includes(query))
-      const pick = iphones.find((d) => d.state === 'connected') ?? iphones[0]
+      const phones = devices.filter((d) => d.kind === 'device' && d.name.toLowerCase().includes(query))
+      const pick = phones.find((d) => d.state === 'connected') ?? phones[0]
       if (!pick) {
         const names = devices.filter((d) => d.kind === 'device').map((d) => d.name)
-        throw new Error(`No iPhone matches "${request.device}"${names.length ? ` (known: ${names.join(', ')})` : ''}`)
+        throw new Error(`No ${phone} matches "${request.device}"${names.length ? ` (known: ${names.join(', ')})` : ''}`)
       }
       if (pick.state !== 'connected') throw new Error(`${pick.name} is not connected (plug it in, or join its Wi-Fi)`)
       return pick
@@ -646,8 +678,8 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (request.simulator !== undefined) {
       const query = request.simulator.toLowerCase()
       const sims = devices.filter((d) => d.kind === 'simulator' && d.name.toLowerCase().includes(query))
-      const pick = query ? sims.find((d) => d.state === 'booted') ?? sims[0] : preferredDestination(sims, worktreeSimulatorName(workspace.name))
-      if (!pick) throw new Error(`No simulator matches "${request.simulator}"`)
+      const pick = query ? sims.find((d) => d.state === 'booted') ?? sims[0] : defaultDestination(platform, sims, workspace.name)
+      if (!pick) throw new Error(`No ${platform === 'ios' ? 'simulator' : 'emulator'} matches "${request.simulator}"`)
       return pick
     }
     return undefined
@@ -670,7 +702,15 @@ export default function activate(orca: OrcaWorkerApi): void {
     try {
       if (request.cmd === 'devices') {
         const { devices, error } = await listDevices()
-        const rows = devices.map((d) => `${d.kind === 'device' ? 'iPhone   ' : 'simulator'}  ${d.name} · ${d.kind === 'device' ? (d.state === 'connected' ? `iOS ${d.os} · ${d.transport === 'cable' ? 'cable' : 'Wi-Fi'}` : 'not connected') : `iOS ${d.os}${d.state === 'booted' ? ' · booted' : ''}`}`)
+        const kindOf = (d: Device) => (d.platform === 'ios' ? (d.kind === 'device' ? 'iPhone' : 'simulator') : d.kind === 'device' ? 'Android' : 'emulator')
+        const osOf = (d: Device) => (d.platform === 'ios' ? `iOS ${d.os}` : /^API /.test(d.os) || !d.os ? d.os || 'Android' : `Android ${d.os}`)
+        const rows = devices.map((d) => {
+          const where =
+            d.kind === 'device'
+              ? d.state === 'connected' ? `${osOf(d)} · ${d.transport === 'cable' ? 'cable' : 'Wi-Fi'}` : `not connected${d.platform === 'android' && d.os ? ` (${d.os})` : ''}`
+              : `${osOf(d)}${d.state === 'booted' ? ' · running' : ''}`
+          return `${kindOf(d).padEnd(9)}  ${d.name} · ${where}`
+        })
         await answer(`res-${id}.sh`, { OK: 1, DEVICES: rows.join('\n') || error || 'No simulators or devices' })
         return
       }
@@ -692,9 +732,12 @@ export default function activate(orca: OrcaWorkerApi): void {
         return
       }
       const projects = workspace.path === focused?.path ? focusedProjects : await findProjects(workspace.path)
+      const saved = await readConfig(workspace.path)
+      const platform: Platform =
+        request.platform ?? (saved.project && projects.some((p) => p.path === saved.project) ? platformOf(saved.project, projects) : projects[0]?.platform ?? 'ios')
       const wantsDevice = request.device !== undefined || request.simulator !== undefined
-      const destination = wantsDevice ? destinationFor((await listDevices()).devices, workspace, request) : undefined
-      const run = await launch(workspace, projects, { destination, scheme: request.scheme, configuration: request.configuration })
+      const destination = wantsDevice ? destinationFor((await listDevices()).devices, platform, workspace, request) : undefined
+      const run = await launch(workspace, projects, { destination, scheme: request.scheme, configuration: request.configuration, platform })
       waiters.set(workspace.path, [...(waiters.get(workspace.path) ?? []), id])
       const config = await readConfig(workspace.path)
       await publish()
@@ -766,6 +809,12 @@ export default function activate(orca: OrcaWorkerApi): void {
     await writeConfig(workspace.path, { destination: pickDestination(device) })
     return { state: await publish(), device }
   })
+}
+
+/** What a run is called: the scheme, or for Android the app's name (`:app` → Qamarero). */
+function displayTarget(target: string, project?: ProjectRef): string {
+  if (!target.startsWith(':')) return target
+  return target === ':app' && project?.name ? project.name : target.slice(1)
 }
 
 /** Answers and posts must be plain JSON: drops keys whose value is `undefined`. */
