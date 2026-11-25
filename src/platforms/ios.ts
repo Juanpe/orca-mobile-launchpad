@@ -108,7 +108,7 @@ export async function listDevices(): Promise<{ devices: Device[]; error?: string
 
 /** Creates a simulator with `base`'s model and OS; answers its UDID. */
 export async function createSimulator(name: string, base: Device): Promise<string> {
-  if (!base.deviceTypeId || !base.runtimeId) throw new Error(`${base.name} no es un simulador`)
+  if (!base.deviceTypeId || !base.runtimeId) throw new Error(`${base.name} is not a simulator`)
   const { stdout } = await exec('xcrun', ['simctl', 'create', name, base.deviceTypeId, base.runtimeId])
   return stdout.trim()
 }
@@ -161,7 +161,7 @@ SCHEME="$6"; CONFIG="$7"; OPEN_SIM="$8"
 status() { printf '%s\n' "$*" > "$STATUS"; }
 step() { printf '\n\033[1;36m▸ %s\033[0m\n' "$*"; }
 fail() { status "failed:$*"; printf '\n\033[1;31m✗ %s\033[0m\n' "$*"; exit 1; }
-trap 'status stopped; printf "\n\033[33m■ Detenido\033[0m\n"; exit 130' INT TERM
+trap 'status stopped; printf "\n\033[33m■ Stopped\033[0m\n"; exit 130' INT TERM
 
 SIGNING=""
 [ "$KIND" = device ] && SIGNING="-allowProvisioningUpdates"
@@ -170,12 +170,12 @@ xcb() { xcrun xcodebuild "$CONTAINER_FLAG" "$CONTAINER" -scheme "$SCHEME" -confi
 
 if [ "$KIND" = simulator ]; then
   status preparing
-  step "Arrancando simulador"
-  xcrun simctl bootstatus "$UDID" -b > /dev/null || fail "No se pudo arrancar el simulador"
+  step "Booting simulator"
+  xcrun simctl bootstatus "$UDID" -b > /dev/null || fail "Could not boot the simulator"
   if [ "$OPEN_SIM" = 1 ]; then
     # Orca's emulator pane when this runs in an Orca terminal; else Simulator.app if installed.
     if command -v orca > /dev/null && orca emulator attach "$UDID" --json > /dev/null 2>&1; then
-      printf '  Simulador en el panel de emulador de Orca\n'
+      printf "  Simulator shown in Orca's emulator pane\n"
     else
       open -g -b com.apple.iphonesimulator --args -CurrentDeviceUDID "$UDID" 2> /dev/null || true
     fi
@@ -183,37 +183,37 @@ if [ "$KIND" = simulator ]; then
 fi
 
 status building
-step "Compilando $SCHEME ($CONFIG)"
+step "Building $SCHEME ($CONFIG)"
 # A version-manager shim (mise, asdf) can exist without a working xcbeautify: run it to be sure.
 if xcbeautify --version > /dev/null 2>&1; then
-  xcb build 2>&1 | xcbeautify --disable-logging || fail "Build fallido"
+  xcb build 2>&1 | xcbeautify --disable-logging || fail "Build failed"
 else
-  xcb -quiet build || fail "Build fallido"
+  xcb -quiet build || fail "Build failed"
 fi
 
 PRODUCTS=$(xcb -showBuildSettings 2> /dev/null | awk -F ' = ' '/^ *TARGET_BUILD_DIR = /{print $2; exit}')
-[ -d "$PRODUCTS" ] || fail "No encuentro la carpeta de productos del build"
+[ -d "$PRODUCTS" ] || fail "Build products folder not found"
 APP="$PRODUCTS/$SCHEME.app"
 [ -d "$APP" ] || APP=$(ls -td "$PRODUCTS"/*.app 2> /dev/null | head -1)
-[ -d "$APP" ] || fail "No encuentro el .app en $PRODUCTS"
+[ -d "$APP" ] || fail "No .app found in $PRODUCTS"
 BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" 2> /dev/null)
-[ -n "$BUNDLE_ID" ] || fail "No puedo leer el bundle id de $APP"
+[ -n "$BUNDLE_ID" ] || fail "Could not read the bundle id of $APP"
 
 status installing
-step "Instalando $(basename "$APP") ($BUNDLE_ID)"
+step "Installing $(basename "$APP") ($BUNDLE_ID)"
 if [ "$KIND" = simulator ]; then
-  xcrun simctl install "$UDID" "$APP" || fail "No se pudo instalar en el simulador"
+  xcrun simctl install "$UDID" "$APP" || fail "Could not install on the simulator"
   status launching
-  step "Lanzando (Ctrl-C para parar)"
+  step "Launching (Ctrl-C to stop)"
   status running
-  xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" || fail "No se pudo lanzar la app"
+  xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" || fail "Could not launch the app"
 else
-  xcrun devicectl device install app --device "$UDID" "$APP" || fail "No se pudo instalar en el dispositivo"
+  xcrun devicectl device install app --device "$UDID" "$APP" || fail "Could not install on the device"
   status launching
-  step "Lanzando (Ctrl-C para parar)"
+  step "Launching (Ctrl-C to stop)"
   status running
-  xcrun devicectl device process launch --device "$UDID" --terminate-existing --console "$BUNDLE_ID" || fail "No se pudo lanzar la app (¿iPhone bloqueado?)"
+  xcrun devicectl device process launch --device "$UDID" --terminate-existing --console "$BUNDLE_ID" || fail "Could not launch the app (is the iPhone locked?)"
 fi
 status exited
-printf '\n\033[2m● La app ha terminado\033[0m\n'
+printf '\n\033[2m● The app exited\033[0m\n'
 `

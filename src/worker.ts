@@ -96,22 +96,22 @@ export default function activate(orca: OrcaWorkerApi): void {
       await orca.host.call('statusBar.update', { id: STATUS_ITEM, visible: false })
       return
     }
-    const target = s.config.destination?.name ?? 'elegir destino'
+    const target = s.config.destination?.name ?? 'choose a destination'
     const scheme = s.config.scheme ?? s.projects[0]?.label.split('/').pop()?.replace(/\.\w+$/, '')
     const run = s.run
     const labels: Partial<Record<RunPhase, string>> = {
-      preparing: 'Preparando',
-      building: 'Compilando',
-      installing: 'Instalando',
-      launching: 'Lanzando'
+      preparing: 'Preparing',
+      building: 'Building',
+      installing: 'Installing',
+      launching: 'Launching'
     }
     let item: { text: string; icon: 'rocket' | 'hammer' | 'play' | 'error' | 'stop'; tone: 'neutral' | 'accent' | 'success' | 'danger'; tooltip: string }
     if (isActive(run.phase)) {
-      item = { text: `${labels[run.phase]}… · ${target}`, icon: 'hammer', tone: 'accent', tooltip: `${run.scheme} → ${target}. Pulsa para relanzar.` }
+      item = { text: `${labels[run.phase]}… · ${target}`, icon: 'hammer', tone: 'accent', tooltip: `${run.scheme} → ${target}. Click to restart.` }
     } else if (run.phase === 'running') {
-      item = { text: `${run.scheme} · ${target}`, icon: 'play', tone: 'success', tooltip: `Ejecutándose en ${target}. Pulsa para recompilar y relanzar.` }
+      item = { text: `${run.scheme} · ${target}`, icon: 'play', tone: 'success', tooltip: `Running on ${target}. Click to rebuild and relaunch.` }
     } else if (run.phase === 'failed') {
-      item = { text: `Falló · ${target}`, icon: 'error', tone: 'danger', tooltip: `${run.message ?? 'Build fallido'}. Pulsa para reintentar.` }
+      item = { text: `Failed · ${target}`, icon: 'error', tone: 'danger', tooltip: `${run.message ?? 'Build failed'}. Click to retry.` }
     } else {
       item = { text: `${scheme ?? 'Run'} · ${target}`, icon: 'rocket', tone: 'neutral', tooltip: `Build & Run de ${s.workspace.name} en ${target}` }
     }
@@ -140,7 +140,7 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   async function ensureFocused(): Promise<WorkspaceInfo> {
     if (!focused) await focus(await orca.host.call('workspace.readContext'))
-    if (!focused) throw Object.assign(new Error('No hay ningún workspace activo'), { code: 'action_failed' })
+    if (!focused) throw Object.assign(new Error('No active workspace'), { code: 'action_failed' })
     return focused
   }
 
@@ -191,9 +191,9 @@ export default function activate(orca: OrcaWorkerApi): void {
       const finished = phase === 'failed' || phase === 'exited' || phase === 'stopped'
       setRun(workspace.path, { ...run, phase, message, finishedAt: finished ? Date.now() : undefined })
       if (phase === 'failed') {
-        void notify(`${run.scheme}: ${message ?? 'falló'}`, workspace.name)
+        void notify(`${run.scheme}: ${message ?? 'failed'}`, workspace.name)
       } else if (phase === 'running') {
-        void notify(`${run.scheme} se está ejecutando en ${run.destinationName}`, workspace.name)
+        void notify(`${run.scheme} is running on ${run.destinationName}`, workspace.name)
       }
       await publish()
     }, POLL_MS)
@@ -214,17 +214,17 @@ export default function activate(orca: OrcaWorkerApi): void {
   async function runFocused(): Promise<LaunchpadState> {
     const workspace = await ensureFocused()
     let s = await state()
-    if (!s.config.project) throw Object.assign(new Error('No encuentro ningún proyecto de Xcode en este worktree'), { code: 'action_failed' })
+    if (!s.config.project) throw Object.assign(new Error('No Xcode project found in this worktree'), { code: 'action_failed' })
     let config = s.config
     if (!config.scheme) {
       const scheme = preferredScheme(await schemesFor(config.project!), config.project!)
-      if (!scheme) throw Object.assign(new Error('El proyecto no tiene schemes compartidos'), { code: 'action_failed' })
+      if (!scheme) throw Object.assign(new Error('The project has no shared schemes'), { code: 'action_failed' })
       config = await writeConfig(workspace.path, { scheme })
     }
     if (!config.destination) {
       const { devices } = await listDevices()
       const device = preferredDestination(devices, worktreeSimulatorName(workspace.name))
-      if (!device) throw Object.assign(new Error('No hay simuladores ni dispositivos disponibles'), { code: 'action_failed' })
+      if (!device) throw Object.assign(new Error('No simulators or devices available'), { code: 'action_failed' })
       config = await writeConfig(workspace.path, { destination: pickDestination(device) })
     }
     await closeRunTerminal(workspace.path)
@@ -276,7 +276,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
   orca.commands.register('launchpad.stop', async () => {
     await stopFocused()
-    return 'Detenido'
+    return 'Stopped'
   })
 
   orca.events.on('workspace.changed', ({ context }) => focus(context))
@@ -319,7 +319,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     let device = devices.find((d) => d.kind === 'simulator' && d.name === name)
     if (!device) {
       const base = devices.find((d) => d.udid === baseUdid)
-      if (!base) throw Object.assign(new Error('No encuentro el simulador base'), { code: 'invalid_params' })
+      if (!base) throw Object.assign(new Error('Base simulator not found'), { code: 'invalid_params' })
       const udid = await createSimulator(name, base)
       device = { ...base, udid, name, state: 'shutdown' }
     }

@@ -3,7 +3,7 @@
   "id": "mobile-launchpad",
   "name": "Mobile Launchpad",
   "version": "0.1.0",
-  "description": "Build & Run de la app móvil del worktree activo en un simulador o en tu iPhone (cable o Wi-Fi), desde el status bar de Orca.",
+  "description": "Build & Run the active worktree's mobile app on a simulator or your iPhone (cable or Wi-Fi), from Orca's status bar.",
   "license": "MIT",
   "engines": {
     "orca": ">=1.4.259"
@@ -45,7 +45,7 @@
         "id": "run",
         "text": "Launchpad",
         "icon": "rocket",
-        "tooltip": "Build & Run de la app móvil del worktree activo",
+        "tooltip": "Build & Run the active worktree's mobile app",
         "command": "launchpad.run"
       }
     ],

@@ -99,15 +99,15 @@ export function setup(ctx: PanelContext): void {
 type Tone = 'neutral' | 'accent' | 'success' | 'danger' | 'warning'
 
 const PHASE: Record<RunPhase, { label: string; tone: Tone; progress?: number }> = {
-  idle: { label: 'Listo', tone: 'neutral' },
-  preparing: { label: 'Preparando', tone: 'accent', progress: 10 },
-  building: { label: 'Compilando', tone: 'accent', progress: 40 },
-  installing: { label: 'Instalando', tone: 'accent', progress: 75 },
-  launching: { label: 'Lanzando', tone: 'accent', progress: 90 },
-  running: { label: 'Ejecutándose', tone: 'success' },
-  exited: { label: 'Terminó', tone: 'neutral' },
-  stopped: { label: 'Detenido', tone: 'warning' },
-  failed: { label: 'Falló', tone: 'danger' }
+  idle: { label: 'Ready', tone: 'neutral' },
+  preparing: { label: 'Preparing', tone: 'accent', progress: 10 },
+  building: { label: 'Building', tone: 'accent', progress: 40 },
+  installing: { label: 'Installing', tone: 'accent', progress: 75 },
+  launching: { label: 'Launching', tone: 'accent', progress: 90 },
+  running: { label: 'Running', tone: 'success' },
+  exited: { label: 'Exited', tone: 'neutral' },
+  stopped: { label: 'Stopped', tone: 'warning' },
+  failed: { label: 'Failed', tone: 'danger' }
 }
 
 function transportLabel(d: { transport?: 'wifi' | 'cable' }): string {
@@ -123,7 +123,7 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
   const device = read(devices)?.find((d) => d.udid === destination?.udid)
   const where = destination
     ? `${destination.name}${device?.kind === 'device' ? ` · ${transportLabel(device)}` : ''}`
-    : 'destino automático'
+    : 'automatic destination'
   const project = s.projects.find((p) => p.path === s.config.project) ?? s.projects[0]
   const projectName = project?.label.split('/').pop()?.replace(/\.(xcworkspace|xcodeproj)$/, '')
   const title = s.config.scheme ?? projectName ?? 'App'
@@ -145,7 +145,7 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
           <Row gap="xs" align="center">
             {destination ? (
               <Badge tone={destination.kind === 'device' ? 'accent' : 'neutral'}>
-                {destination.kind === 'device' ? 'iPhone' : 'Simulador'}
+                {destination.kind === 'device' ? 'iPhone' : 'Simulator'}
               </Badge>
             ) : null}
             <Text size="sm" truncate>
@@ -167,7 +167,7 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
         </Stack>
       ) : run.phase === 'running' && run.startedAt ? (
         <Text size="sm" tone="success">
-          {`En marcha en ${run.destinationName} · `}
+          {`Running on ${run.destinationName} · `}
           <RelativeTime at={run.startedAt} format="short" />
         </Text>
       ) : null}
@@ -178,10 +178,10 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
           variant="solid"
           tone="accent"
           disabled={disabled}
-          tooltip={destination ? 'Mod+Alt+R' : 'Sin destino elegido: usa el simulador del worktree o uno arrancado (Mod+Alt+R)'}
+          tooltip={destination ? 'Mod+Alt+R' : 'No destination chosen: uses the worktree simulator or a booted one (Mod+Alt+R)'}
           onPress={() => guarded('run', async () => receive(await plugin.request('run', undefined, { timeoutMs: 120_000 })))}
         >
-          {live ? 'Relanzar' : 'Build & Run'}
+          {live ? 'Relaunch' : 'Build & Run'}
         </Button>
         {live ? (
           <Button icon="stop" variant="outline" tone="danger" disabled={disabled} onPress={() => guarded('stop', async () => receive(await plugin.request('stop')))}>
@@ -197,9 +197,9 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
 
 function deviceDescription(d: Device): string {
   if (d.kind === 'device') {
-    return d.state === 'connected' ? `iOS ${d.os} · ${transportLabel(d)}` : `iOS ${d.os} · no conectado`
+    return d.state === 'connected' ? `iOS ${d.os} · ${transportLabel(d)}` : `iOS ${d.os} · not connected`
   }
-  return d.state === 'booted' ? `iOS ${d.os} · arrancado` : `iOS ${d.os}`
+  return d.state === 'booted' ? `iOS ${d.os} · booted` : `iOS ${d.os}`
 }
 
 function deviceIcon(d: Device) {
@@ -208,7 +208,7 @@ function deviceIcon(d: Device) {
 }
 
 function choose(device: Device): void {
-  void updateConfig('destino', {
+  void updateConfig('destination', {
     destination: { platform: device.platform, kind: device.kind, udid: device.udid, name: device.name }
   })
 }
@@ -236,15 +236,15 @@ function Destinations({ s }: { s: LaunchpadState }) {
   const selected = s.config.destination?.udid
   const header = (
     <Row justify="between" align="center">
-      <Heading level={3}>Destino</Heading>
-      <IconButton icon="refresh" label="Recargar dispositivos" variant="ghost" size="sm" onPress={() => loadDevices()} />
+      <Heading level={3}>Destination</Heading>
+      <IconButton icon="refresh" label="Reload devices" variant="ghost" size="sm" onPress={() => loadDevices()} />
     </Row>
   )
   if (list === null) {
     return (
       <Stack gap="sm">
         {header}
-        <Skeleton lines={4} label="Buscando dispositivos" />
+        <Skeleton lines={4} label="Looking for devices" />
       </Stack>
     )
   }
@@ -264,16 +264,16 @@ function Destinations({ s }: { s: LaunchpadState }) {
           {listError}
         </Text>
       ) : null}
-      <Tabs label="Destino" value={read(destinationTab)} onChange={(v) => set(destinationTab, v)}>
-        <Tab value="simulators" label={`Simuladores · ${sims.length}`} icon="blocks">
+      <Tabs label="Destination" value={read(destinationTab)} onChange={(v) => set(destinationTab, v)}>
+        <Tab value="simulators" label={`Simulators · ${sims.length}`} icon="blocks">
           <Stack gap="sm">
-            {booted.length > 0 ? <DeviceList label="Arrancados" items={booted} selected={selected} /> : null}
+            {booted.length > 0 ? <DeviceList label="Booted" items={booted} selected={selected} /> : null}
             {others.length > 0 ? (
               <Collapsible
-                title={`Otros simuladores (${others.length})`}
+                title={`Other simulators (${others.length})`}
                 defaultOpen={booted.length === 0 || others.some((d) => d.udid === selected)}
               >
-                <DeviceList label="Otros simuladores" items={others} selected={selected} />
+                <DeviceList label="Other simulators" items={others} selected={selected} />
               </Collapsible>
             ) : null}
             {!hasWorktreeSim && base && s.workspace ? (
@@ -281,28 +281,28 @@ function Destinations({ s }: { s: LaunchpadState }) {
                 variant="outline"
                 icon="add"
                 size="sm"
-                tooltip={`Crea «${worktreeSim}»: un ${base.name} con iOS ${base.os} solo para este worktree`}
+                tooltip={`Creates "${worktreeSim}": a ${base.name} on iOS ${base.os} just for this worktree`}
                 disabled={read(busy) !== null}
                 onPress={() =>
-                  guarded('simulador', async () => {
+                  guarded('simulator', async () => {
                     receive((await plugin.request('simulator.createForWorktree', { baseUdid: base.udid })).state)
                     await loadDevices()
                   })
                 }
               >
-                Simulador para este worktree
+                Simulator for this worktree
               </Button>
             ) : null}
           </Stack>
         </Tab>
-        <Tab value="devices" label={`Dispositivos · ${connected}/${physical.length}`} icon="globe">
+        <Tab value="devices" label={`Devices · ${connected}/${physical.length}`} icon="globe">
           {physical.length > 0 ? (
-            <DeviceList label="Dispositivos" items={physical} selected={selected} />
+            <DeviceList label="Devices" items={physical} selected={selected} />
           ) : (
             <EmptyState
               icon="globe"
-              title="Sin dispositivos"
-              description="Conecta tu iPhone por cable o empareja por Wi-Fi en Xcode (Window → Devices)."
+              title="No devices"
+              description="Connect your iPhone by cable, or pair it over Wi-Fi in Xcode (Window → Devices and Simulators)."
             />
           )}
         </Tab>
@@ -321,27 +321,27 @@ function BuildSettings({ s }: { s: LaunchpadState }) {
   return (
     <Collapsible
       title="Build"
-      description={`${project.label} · ${s.config.scheme ?? 'scheme automático'} · ${s.config.configuration}`}
+      description={`${project.label} · ${s.config.scheme ?? 'automatic scheme'} · ${s.config.configuration}`}
     >
       <Stack gap="sm">
         {s.projects.length > 1 ? (
           <Select
-            label="Proyecto"
+            label="Project"
             value={s.config.project}
             options={s.projects.map((p) => ({ value: p.path, label: p.label }))}
-            onChange={(value) => updateConfig('proyecto', { project: value })}
+            onChange={(value) => updateConfig('project', { project: value })}
           />
         ) : null}
         <Row gap="xs" align="end">
           <Select
             label="Scheme"
             value={s.config.scheme}
-            placeholder={schemeList === null ? 'Leyendo schemes…' : 'Automático'}
+            placeholder={schemeList === null ? 'Reading schemes…' : 'Automatic'}
             options={schemeOptions}
             disabled={schemeList === null}
             onChange={(scheme) => updateConfig('scheme', { scheme })}
           />
-          <IconButton icon="refresh" label="Recargar schemes" variant="ghost" onPress={() => loadSchemes(true)} />
+          <IconButton icon="refresh" label="Reload schemes" variant="ghost" onPress={() => loadSchemes(true)} />
         </Row>
         {read(schemesError) ? (
           <Text tone="warning" size="xs">
@@ -349,10 +349,10 @@ function BuildSettings({ s }: { s: LaunchpadState }) {
           </Text>
         ) : null}
         <Select
-          label="Configuración"
+          label="Configuration"
           value={s.config.configuration}
           options={configurations.map((c) => ({ value: c, label: c }))}
-          onChange={(configuration) => updateConfig('configuración', { configuration })}
+          onChange={(configuration) => updateConfig('configuration', { configuration })}
         />
       </Stack>
     </Collapsible>
@@ -364,16 +364,16 @@ function BuildSettings({ s }: { s: LaunchpadState }) {
 export default function Panel() {
   const s = read(state)
   const failure = read(error)
-  if (!s) return <Skeleton lines={6} label="Cargando" />
+  if (!s) return <Skeleton lines={6} label="Loading" />
   if (!s.workspace) {
-    return <EmptyState icon="rocket" title="Sin worktree activo" description="Abre un worktree con una app móvil." />
+    return <EmptyState icon="rocket" title="No active worktree" description="Open a worktree with a mobile app." />
   }
   if (s.projects.length === 0) {
     return (
       <EmptyState
         icon="rocket"
-        title="Aquí no hay app móvil"
-        description={`${s.workspace.name} no tiene un proyecto de iOS en la raíz ni en ios/, app/ o mobile/ios.`}
+        title="No mobile app here"
+        description={`${s.workspace.name} has no iOS project at its root or in ios/, app/ or mobile/ios.`}
       />
     )
   }
@@ -381,8 +381,8 @@ export default function Panel() {
     <Stack gap="md">
       <LaunchCard s={s} />
       {s.run.phase === 'failed' ? (
-        <Callout tone="danger" title="El build ha fallado" icon="error">
-          <Text size="sm">{s.run.message ?? 'Revisa la terminal del build.'}</Text>
+        <Callout tone="danger" title="Build failed" icon="error">
+          <Text size="sm">{s.run.message ?? 'Check the build terminal.'}</Text>
         </Callout>
       ) : null}
       {failure ? (
@@ -390,8 +390,8 @@ export default function Panel() {
           <Text size="sm">{failure}</Text>
         </Callout>
       ) : null}
-      <Destinations s={s} />
       <BuildSettings s={s} />
+      <Destinations s={s} />
     </Stack>
   )
 }

@@ -1,54 +1,58 @@
 # Mobile Launchpad
 
-Plugin de [Orca](https://github.com/stablyai/orca) para hacer **Build & Run de la app móvil del worktree
-activo** en un simulador de iOS o en un iPhone conectado por cable o Wi-Fi, desde el status bar. Solo
-aparece en worktrees con un proyecto móvil (iOS ahora; Android, después).
+An [Orca](https://github.com/stablyai/orca) plugin to **Build & Run the active worktree's mobile app**
+on an iOS simulator or an iPhone connected by cable or Wi-Fi, from the status bar. It only shows up
+in worktrees that contain a mobile project (iOS today, Android next).
 
-- **Status bar**: `🚀 MiApp · iPhone 18 Pro`. Pulsar compila y lanza; mientras compila muestra la
-  fase (`Compilando… · iPhone`), en verde cuando la app se ejecuta y en rojo si falla.
-- **Panel "Mobile Launchpad"** (barra lateral derecha): proyecto, scheme, configuración y destino de cada
-  worktree. Cada worktree recuerda su configuración.
-- **Simulador por worktree**: "Crear simulador «<worktree> iPhone»" clona el modelo y la versión de
-  iOS del simulador seleccionado, para probar varias ramas a la vez sin pisarse.
-- **Paleta**: `Mobile Launchpad: Build & Run` (`Mod+Alt+R`) y `Mobile Launchpad: Stop`.
+- **Status bar**: `🚀 MyApp · iPhone 18 Pro`. Click to build and run; while building it shows the
+  phase (`Building… · iPhone`), turns green while the app runs and red if it fails.
+- **Mobile Launchpad panel** (right sidebar): a launch card with status, progress and elapsed time,
+  the build settings (project, scheme, configuration) and the destination picker (simulators and
+  devices). Each worktree remembers its own settings.
+- **Simulator per worktree**: "Simulator for this worktree" creates `<worktree> iPhone` with the
+  model and iOS version of the selected simulator, so several branches can run side by side.
+- **Command palette**: `Mobile Launchpad: Build & Run` (`Mod+Alt+R`) and `Mobile Launchpad: Stop`.
 
-## Cómo funciona
+## How it works
 
-El worker busca el `.xcworkspace`/`.xcodeproj` en la raíz del worktree o en una carpeta móvil
-convencional (`ios/`, `iosApp/`, `apple/`, `app/`, `mobile/ios/`, `apps/ios/`…). Una carpeta que solo
-contiene otros repos no cuenta y, al lanzar, abre una terminal de Orca en ese worktree que ejecuta un script:
+The worker looks for an `.xcworkspace`/`.xcodeproj` at the worktree root or in a conventional mobile
+folder (`ios/`, `iosApp/`, `apple/`, `app/`, `mobile/ios/`, `apps/ios/`…). A folder that only
+contains other repositories does not count. A run opens an Orca terminal in that worktree that runs a
+script:
 
-1. Simulador: `simctl bootstatus -b` y lo muestra en el panel de emulador de Orca (`orca emulator attach`), o en Simulator.app si está instalado.
-2. `xcodebuild build` (con `xcbeautify` si está instalado; si no, `-quiet`). En dispositivo añade
-   `-allowProvisioningUpdates`. Usa el DerivedData por defecto de Xcode, así que comparte caché
-   con Xcode.
-3. Instala y lanza con la consola de la app en la terminal:
-   - Simulador: `simctl install` + `simctl launch --console-pty`.
+1. Simulator: `simctl bootstatus -b`, then shows it in Orca's emulator pane (`orca emulator attach`),
+   or in Simulator.app when installed.
+2. `xcodebuild build` (through `xcbeautify` when it actually runs; otherwise `-quiet`). On a device it
+   adds `-allowProvisioningUpdates`. It uses Xcode's default DerivedData, so it shares the build cache
+   with Xcode.
+3. Installs and launches with the app's console in the terminal:
+   - Simulator: `simctl install` + `simctl launch --console-pty`.
    - iPhone: `devicectl device install app` + `devicectl device process launch --console`.
 
-El script escribe su fase en un fichero de estado que el worker lee cada segundo para actualizar el
-status bar. Ctrl-C en la terminal (o `Stop`) para la app. Relanzar cierra la terminal anterior.
+The script writes its phase to a status file that the worker reads every second to update the status
+bar. Ctrl-C in the terminal (or Stop) stops the app. Relaunching closes the previous terminal.
 
-## Desarrollo
+## Development
 
 ```sh
-npm install            # TypeScript y tipos de Node, solo para `npm run typecheck`
+npm install            # TypeScript and Node types, only for `npm run typecheck`
 npm run typecheck
 orca plugin test . --json
 orca plugin check . --json
-orca plugin dev watch . --check --json   # carga el plugin en Orca y recarga al guardar
+orca plugin dev watch . --check --json   # load into Orca and reload on save
 ```
 
-Estructura:
+Layout:
 
-- `src/worker.ts`: estado por worktree, status bar, comandos y peticiones del panel.
-- `src/panel.tsx`: el panel (componentes de Orca, sin build).
-- `src/platforms/ios.ts`: adaptador de iOS (proyectos, schemes, dispositivos, script de run).
-- `src/platforms/ios-parse.ts`: parsers puros de `simctl`, `devicectl` y `xcodebuild -list`.
+- `src/worker.ts`: per-worktree state, status bar, commands and panel requests.
+- `src/panel.tsx`: the panel (Orca components, no build step).
+- `src/platforms/ios.ts`: the iOS adapter (projects, schemes, devices, run script).
+- `src/platforms/ios-parse.ts`: pure parsers for `simctl`, `devicectl` and `xcodebuild -list`.
+- `fixtures/demo-worktree`: a fake worktree for `orca plugin check` / `plugin shot --scenario demo`.
 
-## Android (siguiente paso)
+## Android (next)
 
-La lógica de plataforma vive en `src/platforms/`. Un adaptador `android.ts` ofrecería lo mismo:
-detectar `gradlew` + `settings.gradle(.kts)`, listar con `adb devices -l` y `emulator -list-avds`
-(Wi-Fi con `adb pair`/`adb connect`) y lanzar con `./gradlew :app:installDebug` + `adb shell am
-start`. Falta añadir `'android'` a `Platform` y que el worker elija adaptador según el proyecto.
+Platform logic lives in `src/platforms/`. An `android.ts` adapter would offer the same: detect
+`gradlew` + `settings.gradle(.kts)`, list with `adb devices -l` and `emulator -list-avds` (Wi-Fi via
+`adb pair`/`adb connect`), and launch with `./gradlew :app:installDebug` + `adb shell am start`. What
+is left is adding `'android'` to `Platform` and letting the worker pick the adapter per project.
