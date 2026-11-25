@@ -1,4 +1,4 @@
-// Launchpad's worker: follows the focused workspace, keeps each workspace's run config, drives
+// Mobile Launchpad's worker: follows the focused workspace, keeps each workspace's run config, drives
 // the status bar item, and runs builds in an Orca terminal of that workspace.
 import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -76,12 +76,12 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (!config.project || !focusedProjects.some((p) => p.path === config.project)) {
       if (focusedProjects[0]) config = await writeConfig(focused.path, { project: focusedProjects[0].path, scheme: undefined })
     }
-    return {
+    return toJson({
       workspace: focused,
       projects: focusedProjects,
       config,
       run: runs.get(focused.path) ?? { phase: 'idle' }
-    }
+    })
   }
 
   async function publish(): Promise<LaunchpadState> {
@@ -152,7 +152,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   }
 
   function setRun(path: string, run: RunState): void {
-    runs.set(path, run)
+    runs.set(path, toJson(run))
     if (!isActive(run.phase) && run.phase !== 'running') stopPolling(path)
   }
 
@@ -201,7 +201,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   }
 
   async function notify(body: string, title: string): Promise<void> {
-    await orca.host.call('notifications.show', { title: `Launchpad · ${title}`, body }).catch(() => undefined)
+    await orca.host.call('notifications.show', { title: `Mobile Launchpad · ${title}`, body }).catch(() => undefined)
   }
 
   async function closeRunTerminal(path: string): Promise<void> {
@@ -270,7 +270,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       return `Build & Run: ${s.config.scheme} → ${s.config.destination?.name}`
     } catch (e) {
       const message = (e as Error).message
-      await notify(message, focused?.name ?? 'Launchpad')
+      await notify(message, focused?.name ?? 'Mobile Launchpad')
       return message
     }
   })
@@ -300,8 +300,11 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   orca.panels.handle('config.update', async (patch) => {
     const workspace = await ensureFocused()
-    // A new project invalidates the scheme picked for the old one.
-    const clean = patch.project !== undefined && !('scheme' in patch) ? { ...patch, scheme: undefined } : patch
+    // `null` clears a field; a new project invalidates the scheme picked for the old one.
+    const cleared = Object.fromEntries(
+      Object.entries(patch).map(([k, v]) => [k, v === null ? undefined : v])
+    ) as Partial<WorkspaceConfig>
+    const clean = cleared.project !== undefined && !('scheme' in patch) ? { ...cleared, scheme: undefined } : cleared
     await writeConfig(workspace.path, clean)
     return publish()
   })
@@ -323,6 +326,11 @@ export default function activate(orca: OrcaWorkerApi): void {
     await writeConfig(workspace.path, { destination: pickDestination(device) })
     return { state: await publish(), device }
   })
+}
+
+/** Answers and posts must be plain JSON: drops keys whose value is `undefined`. */
+function toJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
 }
 
 function pickDestination(device: Device) {

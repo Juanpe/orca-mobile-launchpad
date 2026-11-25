@@ -1,9 +1,9 @@
 {
   "manifestVersion": 2,
-  "id": "launchpad",
-  "name": "Launchpad",
+  "id": "mobile-launchpad",
+  "name": "Mobile Launchpad",
   "version": "0.1.0",
-  "description": "Build & Run del worktree activo en un simulador o en tu iPhone (cable o Wi-Fi), desde el status bar de Orca.",
+  "description": "Build & Run de la app móvil del worktree activo en un simulador o en tu iPhone (cable o Wi-Fi), desde el status bar de Orca.",
   "license": "MIT",
   "engines": {
     "orca": ">=1.4.259"
@@ -15,7 +15,7 @@
     "panels": [
       {
         "id": "launchpad",
-        "title": "Launchpad",
+        "title": "Mobile Launchpad",
         "icon": "rocket",
         "entry": "src/panel.tsx",
         "ui": "components"
@@ -24,12 +24,12 @@
     "commands": [
       {
         "id": "launchpad.run",
-        "title": "Launchpad: Build & Run",
+        "title": "Mobile Launchpad: Build & Run",
         "when": "workspace"
       },
       {
         "id": "launchpad.stop",
-        "title": "Launchpad: Stop",
+        "title": "Mobile Launchpad: Stop",
         "when": "workspace"
       }
     ],
@@ -45,7 +45,7 @@
         "id": "run",
         "text": "Launchpad",
         "icon": "rocket",
-        "tooltip": "Build & Run del worktree activo",
+        "tooltip": "Build & Run de la app móvil del worktree activo",
         "command": "launchpad.run"
       }
     ],

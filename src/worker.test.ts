@@ -11,6 +11,7 @@ async function fakeWorktree(): Promise<string> {
   await mkdir(join(root, 'App.xcworkspace'), { recursive: true })
   await mkdir(join(root, 'Pods', 'Pods.xcodeproj'), { recursive: true })
   await mkdir(join(root, 'Packages', 'Kit', 'Example.xcodeproj'), { recursive: true })
+  await mkdir(join(root, 'ios', 'Widget.xcodeproj'), { recursive: true })
   return root
 }
 
@@ -27,14 +28,14 @@ function hostFor(root: string, extra: Record<string, unknown> = {}) {
   })
 }
 
-test('finds the workspace beside the project and skips Pods', async () => {
+test('finds root and ios/ projects, prefers the workspace, ignores other folders', async () => {
   const root = await fakeWorktree()
   try {
     const host = hostFor(root)
     const worker = await mountWorker(main, { host, events: ['workspace.changed'], commands: ['launchpad.run', 'launchpad.stop'] })
     const s = await worker.request('state.get')
     assert.equal(s.workspace?.path, root)
-    assert.deepEqual(s.projects.map((p) => p.label), ['App.xcworkspace', 'App.xcodeproj', 'Packages/Kit/Example.xcodeproj'])
+    assert.deepEqual(s.projects.map((p) => p.label), ['App.xcworkspace', 'App.xcodeproj', 'ios/Widget.xcodeproj'])
     assert.equal(s.config.project, join(root, 'App.xcworkspace'))
     assert.equal(s.config.configuration, 'Debug')
     assert.deepEqual(worker.refusals, [])
@@ -80,6 +81,31 @@ test('hides the status bar item when the worktree has no Xcode project', async (
     })
     const last = host.callsOf('statusBar.update').at(-1) as { visible: boolean }
     assert.equal(last.visible, false)
+    await worker.deactivate()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('a folder of repositories is not an iOS project', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'launchpad-repos-'))
+  await mkdir(join(root, 'SkyStream', 'SkyStream.xcodeproj'), { recursive: true })
+  try {
+    const worker = await mountWorker(main, { host: hostFor(root), events: ['workspace.changed'], commands: ['launchpad.run', 'launchpad.stop'] })
+    const s = await worker.request('state.get')
+    assert.deepEqual(s.projects, [])
+    await worker.deactivate()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('state stays plain JSON after a run reports its phases', async () => {
+  const root = await fakeWorktree()
+  try {
+    const worker = await mountWorker(main, { host: hostFor(root), events: ['workspace.changed'], commands: ['launchpad.run', 'launchpad.stop'] })
+    const s = await worker.request('config.update', { configuration: 'Release' })
+    assert.equal(JSON.stringify(s).includes('undefined'), false)
     await worker.deactivate()
   } finally {
     await rm(root, { recursive: true, force: true })

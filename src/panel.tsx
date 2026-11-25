@@ -1,23 +1,29 @@
-// Launchpad's sidebar panel: pick project, scheme, configuration and destination for the focused
-// worktree, and run it. The worker owns all state; the panel draws what it posts.
+// Mobile Launchpad's sidebar panel. A "launch card" says what runs where and how far the build
+// got; below it, the destination picker and the build settings. The worker owns all state.
 import {
   atom,
   Badge,
+  Box,
   Button,
   Callout,
+  Collapsible,
   EmptyState,
   Heading,
   IconButton,
   List,
   ListItem,
   plugin,
+  Progress,
   read,
+  RelativeTime,
   Row,
   Select,
-  Separator,
   set,
   Skeleton,
+  Spinner,
   Stack,
+  Tab,
+  Tabs,
   Text,
   type PanelContext
 } from 'orca'
@@ -27,7 +33,8 @@ import {
   worktreeSimulatorName,
   type Device,
   type LaunchpadState,
-  type RunPhase
+  type RunPhase,
+  type WorkspaceConfig
 } from './types'
 
 const state = atom<LaunchpadState | null>(null)
@@ -37,6 +44,7 @@ const devices = atom<Device[] | null>(null)
 const devicesError = atom<string | undefined>(undefined)
 const busy = atom<string | null>(null)
 const error = atom<string | null>(null)
+const destinationTab = atom('destinationTab', 'simulators', { persist: 'plugin' })
 
 let schemesFor: string | undefined
 
@@ -66,6 +74,11 @@ async function loadDevices(): Promise<void> {
   set(devicesError, answer.error)
 }
 
+/** Saves part of the workspace's config and draws the state the worker answers. */
+function updateConfig(label: string, patch: Partial<WorkspaceConfig>): Promise<void> {
+  return guarded(label, async () => receive(await plugin.request('config.update', patch)))
+}
+
 function receive(next: LaunchpadState): void {
   set(state, next)
   if (next.config.project !== schemesFor) {
@@ -81,54 +94,139 @@ export function setup(ctx: PanelContext): void {
   void loadDevices()
 }
 
-const PHASE_LABEL: Record<RunPhase, string> = {
-  idle: 'Listo',
-  preparing: 'Preparando',
-  building: 'Compilando',
-  installing: 'Instalando',
-  launching: 'Lanzando',
-  running: 'Ejecutándose',
-  exited: 'Terminó',
-  stopped: 'Detenido',
-  failed: 'Falló'
+// ── Run status ────────────────────────────────────────────────────────────────────────────────
+
+type Tone = 'neutral' | 'accent' | 'success' | 'danger' | 'warning'
+
+const PHASE: Record<RunPhase, { label: string; tone: Tone; progress?: number }> = {
+  idle: { label: 'Listo', tone: 'neutral' },
+  preparing: { label: 'Preparando', tone: 'accent', progress: 10 },
+  building: { label: 'Compilando', tone: 'accent', progress: 40 },
+  installing: { label: 'Instalando', tone: 'accent', progress: 75 },
+  launching: { label: 'Lanzando', tone: 'accent', progress: 90 },
+  running: { label: 'Ejecutándose', tone: 'success' },
+  exited: { label: 'Terminó', tone: 'neutral' },
+  stopped: { label: 'Detenido', tone: 'warning' },
+  failed: { label: 'Falló', tone: 'danger' }
 }
 
-function phaseTone(phase: RunPhase): 'neutral' | 'accent' | 'success' | 'danger' | 'warning' {
-  if (isActive(phase)) return 'accent'
-  if (phase === 'running') return 'success'
-  if (phase === 'failed') return 'danger'
-  return 'neutral'
+function transportLabel(d: { transport?: 'wifi' | 'cable' }): string {
+  return d.transport === 'cable' ? 'Cable' : 'Wi-Fi'
 }
+
+function LaunchCard({ s }: { s: LaunchpadState }) {
+  const run = s.run
+  const phase = PHASE[run.phase]
+  const active = isActive(run.phase)
+  const live = active || run.phase === 'running'
+  const destination = s.config.destination
+  const device = read(devices)?.find((d) => d.udid === destination?.udid)
+  const where = destination
+    ? `${destination.name}${device?.kind === 'device' ? ` · ${transportLabel(device)}` : ''}`
+    : 'destino automático'
+  const project = s.projects.find((p) => p.path === s.config.project) ?? s.projects[0]
+  const projectName = project?.label.split('/').pop()?.replace(/\.(xcworkspace|xcodeproj)$/, '')
+  const title = s.config.scheme ?? projectName ?? 'App'
+  const branch = s.workspace?.branch ?? ''
+  const subtitle = !branch
+    ? s.workspace?.name ?? ''
+    : branch.includes(s.workspace?.name ?? '\u0000')
+      ? branch
+      : `${s.workspace?.name} · ${branch}`
+  const disabled = read(busy) !== null
+  return (
+    <Box border={live ? phase.tone : true} radius="lg" padding="md" background="card" gap="sm">
+      <Row justify="between" align="start">
+        <Stack gap="none">
+          <Text muted size="xs" weight="medium" truncate>
+            {subtitle}
+          </Text>
+          <Heading level={1}>{title}</Heading>
+          <Row gap="xs" align="center">
+            {destination ? (
+              <Badge tone={destination.kind === 'device' ? 'accent' : 'neutral'}>
+                {destination.kind === 'device' ? 'iPhone' : 'Simulador'}
+              </Badge>
+            ) : null}
+            <Text size="sm" truncate>
+              {`→ ${where}`}
+            </Text>
+          </Row>
+        </Stack>
+        <Badge tone={phase.tone}>{phase.label}</Badge>
+      </Row>
+
+      {active ? (
+        <Stack gap="xs">
+          <Row gap="xs" align="center">
+            <Spinner label={phase.label} labelHidden />
+            <Text size="sm">{`${phase.label}…`}</Text>
+            {run.startedAt ? <RelativeTime at={run.startedAt} format="duration" muted /> : null}
+          </Row>
+          <Progress label={phase.label} labelHidden value={phase.progress} />
+        </Stack>
+      ) : run.phase === 'running' && run.startedAt ? (
+        <Text size="sm" tone="success">
+          {`En marcha en ${run.destinationName} · `}
+          <RelativeTime at={run.startedAt} format="short" />
+        </Text>
+      ) : null}
+
+      <Row gap="xs">
+        <Button
+          icon={live ? 'refresh' : 'play'}
+          variant="solid"
+          tone="accent"
+          disabled={disabled}
+          tooltip={destination ? 'Mod+Alt+R' : 'Sin destino elegido: usa el simulador del worktree o uno arrancado (Mod+Alt+R)'}
+          onPress={() => guarded('run', async () => receive(await plugin.request('run', undefined, { timeoutMs: 120_000 })))}
+        >
+          {live ? 'Relanzar' : 'Build & Run'}
+        </Button>
+        {live ? (
+          <Button icon="stop" variant="outline" tone="danger" disabled={disabled} onPress={() => guarded('stop', async () => receive(await plugin.request('stop')))}>
+            Stop
+          </Button>
+        ) : null}
+      </Row>
+    </Box>
+  )
+}
+
+// ── Destinations ──────────────────────────────────────────────────────────────────────────────
 
 function deviceDescription(d: Device): string {
   if (d.kind === 'device') {
-    if (d.state !== 'connected') return `iOS ${d.os} · no disponible`
-    return `iOS ${d.os} · ${d.transport === 'cable' ? 'Cable' : 'Wi-Fi'}`
+    return d.state === 'connected' ? `iOS ${d.os} · ${transportLabel(d)}` : `iOS ${d.os} · no conectado`
   }
-  return `iOS ${d.os}${d.state === 'booted' ? ' · arrancado' : ''}`
+  return d.state === 'booted' ? `iOS ${d.os} · arrancado` : `iOS ${d.os}`
 }
 
-function DeviceItem({ device, selected }: { device: Device; selected: boolean }) {
+function deviceIcon(d: Device) {
+  if (d.kind === 'device') return d.state !== 'connected' ? 'close' : d.transport === 'cable' ? 'plug' : 'globe'
+  return d.state === 'booted' ? 'zap' : /iPad/.test(d.name) ? 'layers' : 'blocks'
+}
+
+function choose(device: Device): void {
+  void updateConfig('destino', {
+    destination: { platform: device.platform, kind: device.kind, udid: device.udid, name: device.name }
+  })
+}
+
+function DeviceList({ label, items, selected }: { label: string; items: Device[]; selected?: string }) {
   return (
-    <ListItem
-      title={device.name}
-      description={deviceDescription(device)}
-      icon={device.kind === 'device' ? (device.transport === 'cable' ? 'plug' : 'globe') : 'layers'}
-      current={selected}
-      disabled={device.state === 'unavailable'}
-      onPress={() =>
-        guarded('destino', () =>
-          plugin.request('config.update', {
-            destination: {
-              platform: device.platform,
-              kind: device.kind,
-              udid: device.udid,
-              name: device.name
-            }
-          })
-        )
-      }
-    />
+    <List label={label}>
+      {items.map((d) => (
+        <ListItem
+          title={d.name}
+          description={deviceDescription(d)}
+          icon={deviceIcon(d)}
+          current={d.udid === selected}
+          disabled={d.state === 'unavailable'}
+          onPress={() => choose(d)}
+        />
+      ))}
+    </List>
   )
 }
 
@@ -137,9 +235,9 @@ function Destinations({ s }: { s: LaunchpadState }) {
   const listError = read(devicesError)
   const selected = s.config.destination?.udid
   const header = (
-    <Row justify="between">
+    <Row justify="between" align="center">
       <Heading level={3}>Destino</Heading>
-      <IconButton icon="refresh" label="Recargar dispositivos" onPress={() => loadDevices()} />
+      <IconButton icon="refresh" label="Recargar dispositivos" variant="ghost" size="sm" onPress={() => loadDevices()} />
     </Row>
   )
   if (list === null) {
@@ -152,10 +250,12 @@ function Destinations({ s }: { s: LaunchpadState }) {
   }
   const physical = list.filter((d) => d.kind === 'device')
   const sims = list.filter((d) => d.kind === 'simulator')
+  const booted = sims.filter((d) => d.state === 'booted')
+  const others = sims.filter((d) => d.state !== 'booted')
   const worktreeSim = s.workspace ? worktreeSimulatorName(s.workspace.name) : ''
   const hasWorktreeSim = sims.some((d) => d.name === worktreeSim)
-  const base =
-    sims.find((d) => d.udid === selected) ?? sims.find((d) => /iPhone/.test(d.name)) ?? sims[0]
+  const base = sims.find((d) => d.udid === selected) ?? sims.find((d) => /iPhone/.test(d.name)) ?? sims[0]
+  const connected = physical.filter((d) => d.state === 'connected').length
   return (
     <Stack gap="sm">
       {header}
@@ -164,96 +264,125 @@ function Destinations({ s }: { s: LaunchpadState }) {
           {listError}
         </Text>
       ) : null}
-      {physical.length > 0 ? (
-        <List label="Dispositivos">
-          {physical.map((d) => (
-            <DeviceItem device={d} selected={d.udid === selected} />
-          ))}
-        </List>
-      ) : null}
-      <List label="Simuladores">
-        {sims.map((d) => (
-          <DeviceItem device={d} selected={d.udid === selected} />
-        ))}
-      </List>
-      {!hasWorktreeSim && base && s.workspace ? (
-        <Button
-          variant="outline"
-          icon="add"
-          tooltip={`Crea un ${base.name} con iOS ${base.os} solo para este worktree`}
-          disabled={read(busy) !== null}
-          onPress={() =>
-            guarded('simulador', async () => {
-              await plugin.request('simulator.createForWorktree', { baseUdid: base.udid })
-              await loadDevices()
-            })
-          }
-        >
-          {`Crear simulador «${worktreeSim}»`}
-        </Button>
-      ) : null}
+      <Tabs label="Destino" value={read(destinationTab)} onChange={(v) => set(destinationTab, v)}>
+        <Tab value="simulators" label={`Simuladores · ${sims.length}`} icon="blocks">
+          <Stack gap="sm">
+            {booted.length > 0 ? <DeviceList label="Arrancados" items={booted} selected={selected} /> : null}
+            {others.length > 0 ? (
+              <Collapsible
+                title={`Otros simuladores (${others.length})`}
+                defaultOpen={booted.length === 0 || others.some((d) => d.udid === selected)}
+              >
+                <DeviceList label="Otros simuladores" items={others} selected={selected} />
+              </Collapsible>
+            ) : null}
+            {!hasWorktreeSim && base && s.workspace ? (
+              <Button
+                variant="outline"
+                icon="add"
+                size="sm"
+                tooltip={`Crea «${worktreeSim}»: un ${base.name} con iOS ${base.os} solo para este worktree`}
+                disabled={read(busy) !== null}
+                onPress={() =>
+                  guarded('simulador', async () => {
+                    receive((await plugin.request('simulator.createForWorktree', { baseUdid: base.udid })).state)
+                    await loadDevices()
+                  })
+                }
+              >
+                Simulador para este worktree
+              </Button>
+            ) : null}
+          </Stack>
+        </Tab>
+        <Tab value="devices" label={`Dispositivos · ${connected}/${physical.length}`} icon="globe">
+          {physical.length > 0 ? (
+            <DeviceList label="Dispositivos" items={physical} selected={selected} />
+          ) : (
+            <EmptyState
+              icon="globe"
+              title="Sin dispositivos"
+              description="Conecta tu iPhone por cable o empareja por Wi-Fi en Xcode (Window → Devices)."
+            />
+          )}
+        </Tab>
+      </Tabs>
     </Stack>
   )
 }
+
+// ── Build settings ────────────────────────────────────────────────────────────────────────────
+
+function BuildSettings({ s }: { s: LaunchpadState }) {
+  const schemeList = read(schemes)
+  const schemeOptions = (schemeList ?? (s.config.scheme ? [s.config.scheme] : [])).map((x) => ({ value: x, label: x }))
+  const configurations = Array.from(new Set(['Debug', 'Release', s.config.configuration]))
+  const project = s.projects.find((p) => p.path === s.config.project) ?? s.projects[0]!
+  return (
+    <Collapsible
+      title="Build"
+      description={`${project.label} · ${s.config.scheme ?? 'scheme automático'} · ${s.config.configuration}`}
+    >
+      <Stack gap="sm">
+        {s.projects.length > 1 ? (
+          <Select
+            label="Proyecto"
+            value={s.config.project}
+            options={s.projects.map((p) => ({ value: p.path, label: p.label }))}
+            onChange={(value) => updateConfig('proyecto', { project: value })}
+          />
+        ) : null}
+        <Row gap="xs" align="end">
+          <Select
+            label="Scheme"
+            value={s.config.scheme}
+            placeholder={schemeList === null ? 'Leyendo schemes…' : 'Automático'}
+            options={schemeOptions}
+            disabled={schemeList === null}
+            onChange={(scheme) => updateConfig('scheme', { scheme })}
+          />
+          <IconButton icon="refresh" label="Recargar schemes" variant="ghost" onPress={() => loadSchemes(true)} />
+        </Row>
+        {read(schemesError) ? (
+          <Text tone="warning" size="xs">
+            {read(schemesError)}
+          </Text>
+        ) : null}
+        <Select
+          label="Configuración"
+          value={s.config.configuration}
+          options={configurations.map((c) => ({ value: c, label: c }))}
+          onChange={(configuration) => updateConfig('configuración', { configuration })}
+        />
+      </Stack>
+    </Collapsible>
+  )
+}
+
+// ── Panel ─────────────────────────────────────────────────────────────────────────────────────
 
 export default function Panel() {
   const s = read(state)
   const failure = read(error)
   if (!s) return <Skeleton lines={6} label="Cargando" />
   if (!s.workspace) {
-    return <EmptyState icon="rocket" title="Sin worktree activo" description="Abre un worktree con un proyecto de Xcode." />
+    return <EmptyState icon="rocket" title="Sin worktree activo" description="Abre un worktree con una app móvil." />
   }
   if (s.projects.length === 0) {
     return (
       <EmptyState
         icon="rocket"
-        title="No hay proyecto de Xcode"
-        description={`No encuentro ningún .xcworkspace ni .xcodeproj en ${s.workspace.name}.`}
+        title="Aquí no hay app móvil"
+        description={`${s.workspace.name} no tiene un proyecto de iOS en la raíz ni en ios/, app/ o mobile/ios.`}
       />
     )
   }
-  const run = s.run
-  const schemeList = read(schemes)
-  const schemeOptions = (schemeList ?? (s.config.scheme ? [s.config.scheme] : [])).map((x) => ({ value: x, label: x }))
-  const configurations = Array.from(new Set(['Debug', 'Release', s.config.configuration]))
-  const active = isActive(run.phase) || run.phase === 'running'
   return (
     <Stack gap="md">
-      <Row justify="between">
-        <Stack gap="none">
-          <Heading>{s.workspace.name}</Heading>
-          {s.workspace.branch ? (
-            <Text muted size="xs" truncate>
-              {s.workspace.branch}
-            </Text>
-          ) : null}
-        </Stack>
-        <Badge tone={phaseTone(run.phase)}>{PHASE_LABEL[run.phase]}</Badge>
-      </Row>
-
-      <Row gap="xs">
-        <Button
-          icon="play"
-          tone="accent"
-          disabled={read(busy) !== null}
-          tooltip="Mod+Alt+R"
-          onPress={() => guarded('run', () => plugin.request('run', undefined, { timeoutMs: 120_000 }))}
-        >
-          {active ? 'Relanzar' : 'Build & Run'}
-        </Button>
-        <Button
-          icon="stop"
-          variant="outline"
-          disabled={!active || read(busy) !== null}
-          onPress={() => guarded('stop', () => plugin.request('stop'))}
-        >
-          Stop
-        </Button>
-      </Row>
-
-      {run.phase === 'failed' ? (
-        <Callout tone="danger" title="Falló" icon="error">
-          <Text size="sm">{run.message ?? 'Revisa la terminal del build.'}</Text>
+      <LaunchCard s={s} />
+      {s.run.phase === 'failed' ? (
+        <Callout tone="danger" title="El build ha fallado" icon="error">
+          <Text size="sm">{s.run.message ?? 'Revisa la terminal del build.'}</Text>
         </Callout>
       ) : null}
       {failure ? (
@@ -261,54 +390,8 @@ export default function Panel() {
           <Text size="sm">{failure}</Text>
         </Callout>
       ) : null}
-      {run.destinationName && run.phase !== 'idle' ? (
-        <Text muted size="xs">
-          {`${run.scheme} → ${run.destinationName}`}
-        </Text>
-      ) : null}
-
-      <Separator />
-
-      {s.projects.length > 1 ? (
-        <Select
-          label="Proyecto"
-          value={s.config.project}
-          options={s.projects.map((p) => ({ value: p.path, label: p.label }))}
-          onChange={(project) => guarded('proyecto', () => plugin.request('config.update', { project }))}
-        />
-      ) : (
-        <Text size="sm">
-          <Text muted size="sm">Proyecto </Text>
-          {s.projects[0]!.label}
-        </Text>
-      )}
-
-      <Row gap="xs" align="end">
-        <Select
-          label="Scheme"
-          value={s.config.scheme}
-          placeholder={schemeList === null ? 'Leyendo schemes…' : 'Automático'}
-          options={schemeOptions}
-          disabled={schemeList === null}
-          onChange={(scheme) => guarded('scheme', () => plugin.request('config.update', { scheme }))}
-        />
-        <IconButton icon="refresh" label="Recargar schemes" onPress={() => loadSchemes(true)} />
-      </Row>
-      {read(schemesError) ? (
-        <Text tone="warning" size="xs">
-          {read(schemesError)}
-        </Text>
-      ) : null}
-
-      <Select
-        label="Configuración"
-        value={s.config.configuration}
-        options={configurations.map((c) => ({ value: c, label: c }))}
-        onChange={(configuration) => guarded('configuración', () => plugin.request('config.update', { configuration }))}
-      />
-
-      <Separator />
       <Destinations s={s} />
+      <BuildSettings s={s} />
     </Stack>
   )
 }

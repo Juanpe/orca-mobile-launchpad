@@ -1,20 +1,22 @@
-# Launchpad
+# Mobile Launchpad
 
-Plugin de [Orca](https://github.com/stablyai/orca) para hacer **Build & Run del worktree activo** en
-un simulador de iOS o en un iPhone conectado por cable o Wi-Fi, desde el status bar.
+Plugin de [Orca](https://github.com/stablyai/orca) para hacer **Build & Run de la app móvil del worktree
+activo** en un simulador de iOS o en un iPhone conectado por cable o Wi-Fi, desde el status bar. Solo
+aparece en worktrees con un proyecto móvil (iOS ahora; Android, después).
 
 - **Status bar**: `🚀 MiApp · iPhone 18 Pro`. Pulsar compila y lanza; mientras compila muestra la
   fase (`Compilando… · iPhone`), en verde cuando la app se ejecuta y en rojo si falla.
-- **Panel "Launchpad"** (barra lateral derecha): proyecto, scheme, configuración y destino de cada
+- **Panel "Mobile Launchpad"** (barra lateral derecha): proyecto, scheme, configuración y destino de cada
   worktree. Cada worktree recuerda su configuración.
 - **Simulador por worktree**: "Crear simulador «<worktree> iPhone»" clona el modelo y la versión de
   iOS del simulador seleccionado, para probar varias ramas a la vez sin pisarse.
-- **Paleta**: `Launchpad: Build & Run` (`Mod+Alt+R`) y `Launchpad: Stop`.
+- **Paleta**: `Mobile Launchpad: Build & Run` (`Mod+Alt+R`) y `Mobile Launchpad: Stop`.
 
 ## Cómo funciona
 
-El worker detecta el `.xcworkspace`/`.xcodeproj` del worktree (hasta 3 niveles, sin `Pods` ni
-`node_modules`) y, al lanzar, abre una terminal de Orca en ese worktree que ejecuta un script:
+El worker busca el `.xcworkspace`/`.xcodeproj` en la raíz del worktree o en una carpeta móvil
+convencional (`ios/`, `iosApp/`, `apple/`, `app/`, `mobile/ios/`, `apps/ios/`…). Una carpeta que solo
+contiene otros repos no cuenta y, al lanzar, abre una terminal de Orca en ese worktree que ejecuta un script:
 
 1. Simulador: `simctl bootstatus -b` y lo muestra en el panel de emulador de Orca (`orca emulator attach`), o en Simulator.app si está instalado.
 2. `xcodebuild build` (con `xcbeautify` si está instalado; si no, `-quiet`). En dispositivo añade

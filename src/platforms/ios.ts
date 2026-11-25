@@ -7,46 +7,52 @@ import { exec, shellQuote } from '../exec'
 import type { Destination, Device, ProjectRef } from '../types'
 import { parseDevicectlDevices, parseSchemes, parseSimctlDevices } from './ios-parse'
 
-const SKIP_DIRS = new Set([
-  'node_modules',
-  'Pods',
-  'Carthage',
-  'DerivedData',
-  'build',
-  'vendor',
-  'fastlane'
-])
+/** Where a repository keeps its iOS app: the root, or a conventional mobile folder. Only these
+ *  are searched, so a folder that merely contains other repositories (say "Side Projects") does
+ *  not count as an iOS project. */
+// Case matters on case-sensitive volumes only; findProjects drops the duplicates elsewhere.
+const IOS_DIRS = [
+  '',
+  'ios',
+  'iOS',
+  'iosApp',
+  'iOSApp',
+  'apple',
+  'app',
+  'App',
+  'mobile/ios',
+  'apps/ios',
+  'app/ios',
+  'client/ios'
+]
 
-/** Xcode workspaces and projects up to `maxDepth` folders deep. A workspace sitting beside a
- *  project (CocoaPods, Tuist) comes first, since that is the one to build. */
-export async function findProjects(root: string, maxDepth = 3): Promise<ProjectRef[]> {
+/** Xcode workspaces and projects in the worktree root or a conventional iOS folder. A workspace
+ *  beside a project (CocoaPods, Tuist) comes first, since that is the one to build. */
+export async function findProjects(root: string): Promise<ProjectRef[]> {
   const found: ProjectRef[] = []
-  async function walk(dir: string, depth: number): Promise<void> {
+  const seen = new Set<string>()
+  for (const sub of IOS_DIRS) {
+    const dir = sub ? join(root, sub) : root
     let entries
     try {
       entries = await readdir(dir, { withFileTypes: true })
     } catch {
-      return
+      continue
     }
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue
       const name = entry.name
+      if (!entry.isDirectory() || !(name.endsWith('.xcworkspace') || name.endsWith('.xcodeproj'))) continue
       const path = join(dir, name)
-      if (name.endsWith('.xcworkspace') || name.endsWith('.xcodeproj')) {
-        found.push({
-          platform: 'ios',
-          kind: name.endsWith('.xcworkspace') ? 'workspace' : 'project',
-          path,
-          label: relative(root, path)
-        })
-        continue // never descend into bundles (each .xcodeproj hides a project.xcworkspace)
-      }
-      if (depth < maxDepth && !name.startsWith('.') && !SKIP_DIRS.has(name)) {
-        await walk(path, depth + 1)
-      }
+      if (seen.has(path.toLowerCase())) continue // ios/ and iOS/ on a case-insensitive disk
+      seen.add(path.toLowerCase())
+      found.push({
+        platform: 'ios',
+        kind: name.endsWith('.xcworkspace') ? 'workspace' : 'project',
+        path,
+        label: relative(root, path)
+      })
     }
   }
-  await walk(root, 0)
   const depthOf = (p: ProjectRef) => p.label.split('/').length
   return found.sort(
     (a, b) =>
@@ -147,7 +153,7 @@ export async function prepareRunCommand(request: RunRequest): Promise<string> {
  * terminal. Ctrl-C in the terminal stops the app and marks the run `stopped`.
  */
 export const RUN_SCRIPT = String.raw`#!/bin/bash
-# Launchpad iOS runner. Written by the Launchpad Orca plugin; rewritten on every run.
+# Mobile Launchpad iOS runner. Written by the Mobile Launchpad Orca plugin; rewritten on every run.
 set -o pipefail
 STATUS="$1"; KIND="$2"; UDID="$3"; CONTAINER_FLAG="$4"; CONTAINER="$5"
 SCHEME="$6"; CONFIG="$7"; OPEN_SIM="$8"

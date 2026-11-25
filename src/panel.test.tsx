@@ -39,11 +39,12 @@ function host(onUpdate?: (patch: unknown) => void, onRun?: () => void) {
 
 test('draws the worktree, its devices and the worktree simulator button', async () => {
   const view = await mount(panel, { host: host() })
-  const drawn = JSON.stringify(view.tree())
-  assert.ok(view.find({ type: 'Heading', text: 'bill-customer' }))
+  assert.ok(view.find({ type: 'Heading', text: 'App' }))
+  assert.ok(view.find({ type: 'Button', text: 'Simulador para este worktree' }))
+  assert.ok(view.find({ type: 'ListItem', label: /iPhone 18 Pro/ }))
+  await view.select({ type: 'Tabs' }, 'devices')
   assert.ok(view.find({ type: 'ListItem', label: /Wifi iPhone/ }))
-  assert.ok(drawn.includes('iOS 27.2 · Wi-Fi'))
-  assert.ok(view.find({ type: 'Button', text: 'Crear simulador «bill-customer iPhone»' }))
+  assert.ok(JSON.stringify(view.tree()).includes('iOS 27.2 · Wi-Fi'))
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.warnings, [])
   await view.unmount()
@@ -53,12 +54,14 @@ test('picking a device saves it as the destination; Build & Run asks the worker'
   const patches: unknown[] = []
   let runs = 0
   const view = await mount(panel, { host: host((p) => patches.push(p), () => runs++) })
+  await view.select({ type: 'Tabs' }, 'devices')
   await view.press({ type: 'ListItem', label: /Wifi iPhone/ })
   assert.deepEqual(patches, [{ destination: { platform: 'ios', kind: 'device', udid: 'U2', name: 'Wifi iPhone' } }])
   await view.press({ text: 'Build & Run' })
   assert.equal(runs, 1)
   await view.post('state.changed', { ...STATE, run: { phase: 'building', scheme: 'App', destinationName: 'Wifi iPhone' } })
-  assert.ok(view.find({ text: 'Compilando' }))
+  assert.ok(view.find({ type: 'Badge', text: 'Compilando' }))
+  assert.ok(view.find({ type: 'Progress' }))
   assert.ok(view.find({ text: 'Relanzar' }))
   assert.deepEqual(view.errors, [])
   await view.unmount()
@@ -73,6 +76,6 @@ test('empty state without an Xcode project', async () => {
       }
     })
   })
-  assert.match(view.summary().join('\n'), /No hay proyecto de Xcode/)
+  assert.match(view.summary().join('\n'), /Aquí no hay app móvil/)
   await view.unmount()
 })
