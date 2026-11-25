@@ -32,6 +32,17 @@ script:
 The script writes its phase to a status file that the worker reads every second to update the status
 bar. Ctrl-C in the terminal (or Stop) stops the app. Relaunching closes the previous terminal.
 
+## Install
+
+Orca copies a folder install as is and refuses `node_modules`' symlinks, so install a clean export of
+the last commit:
+
+```sh
+npm run release:install   # git archive HEAD → temp folder → orca plugin install (asks for --approve)
+```
+
+Orca keeps its own copy under `~/Library/Application Support/orca/plugins/`; reinstall after changes.
+
 ## Development
 
 ```sh

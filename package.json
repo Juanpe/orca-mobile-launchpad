@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p .",
-    "test": "orca plugin test . --json"
+    "test": "orca plugin test . --json",
+    "release:install": "D=$(mktemp -d) && git archive HEAD | tar -x -C \"$D\" && orca plugin install \"$D\" --json; rm -rf \"$D\""
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
