@@ -27,6 +27,7 @@ import {
   worktreeSimulatorName,
   type Device,
   type LaunchpadState,
+  type OtherRun,
   type ProjectRef,
   type RunPhase,
   type RunState,
@@ -67,6 +68,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   let focused: WorkspaceInfo | null = null
   let focusedProjects: ProjectRef[] = []
   const runs = new Map<string, RunState>() // by workspace path
+  const runWorkspaces = new Map<string, WorkspaceInfo>() // the worktree each run belongs to
   const pollers = new Map<string, ReturnType<typeof setInterval>>()
   const schemeCache = new Map<string, { schemes: string[]; appSchemes: string[] }>()
   let spinTimer: ReturnType<typeof setInterval> | undefined
@@ -105,8 +107,34 @@ export default function activate(orca: OrcaWorkerApi): void {
     return { id: context.workspaceId, name: context.displayName || row.name, branch: context.branch, path: row.path }
   }
 
+  const canNavigate = () => orca.grantedCapabilities.includes('workspace:write')
+  const RECENT_MS = 15 * 60_000
+
+  /** Runs outside the focused worktree worth showing: in progress, running, or a failure or crash
+   *  from the last few minutes. */
+  function otherRuns(): OtherRun[] {
+    const now = Date.now()
+    const out: OtherRun[] = []
+    for (const [path, run] of runs) {
+      const workspace = runWorkspaces.get(path)
+      if (!workspace || path === focused?.path) continue
+      const recentBadEnd = (run.phase === 'failed' || run.phase === 'crashed') && now - (run.finishedAt ?? 0) < RECENT_MS
+      if (isActive(run.phase) || run.phase === 'running' || recentBadEnd) out.push({ workspace, run })
+    }
+    return out.sort((a, b) => (b.run.startedAt ?? 0) - (a.run.startedAt ?? 0))
+  }
+
   async function state(): Promise<LaunchpadState> {
-    if (!focused) return { workspace: null, projects: [], config: DEFAULT_CONFIG, run: { phase: 'idle' } }
+    if (!focused) {
+      return toJson({
+        workspace: null,
+        projects: [],
+        config: DEFAULT_CONFIG,
+        run: { phase: 'idle' as const },
+        otherRuns: otherRuns(),
+        canNavigate: canNavigate()
+      })
+    }
     let config = await readConfig(focused.path)
     if (!config.project || !focusedProjects.some((p) => p.path === config.project)) {
       if (focusedProjects[0]) config = await writeConfig(focused.path, { project: focusedProjects[0].path, scheme: undefined })
@@ -115,7 +143,9 @@ export default function activate(orca: OrcaWorkerApi): void {
       workspace: focused,
       projects: focusedProjects,
       config,
-      run: runs.get(focused.path) ?? { phase: 'idle' }
+      run: runs.get(focused.path) ?? { phase: 'idle' },
+      otherRuns: otherRuns(),
+      canNavigate: canNavigate()
     })
   }
 
@@ -132,7 +162,7 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   /** Spins the status bar item while the focused workspace builds. */
   function animateStatusBar(s: LaunchpadState): void {
-    const active = !!s.workspace && isActive(s.run.phase)
+    const active = [...runs.values()].some((r) => isActive(r.phase))
     if (active && !spinTimer) {
       spinTimer = every(SPIN_MS, () => {
         if (spinBackoff > 0) return void spinBackoff--
@@ -150,8 +180,16 @@ export default function activate(orca: OrcaWorkerApi): void {
   }
 
   async function updateStatusBar(s: LaunchpadState): Promise<void> {
+    const elsewhere = s.otherRuns.filter((o) => isActive(o.run.phase)).length
+    const elsewhereText = elsewhere ? `${SPINNER[spinFrame]} ${elsewhere} building elsewhere` : ''
     if (!s.workspace || s.projects.length === 0) {
-      await orca.host.call('statusBar.update', { id: STATUS_ITEM, visible: false })
+      // Nothing to run here, but keep showing builds that go on in other worktrees.
+      await orca.host.call(
+        'statusBar.update',
+        elsewhere
+          ? { id: STATUS_ITEM, visible: true, text: elsewhereText, icon: 'hammer', tone: 'accent', tooltip: s.otherRuns.map((o) => `${o.run.scheme} · ${o.workspace.name}`).join('\n') }
+          : { id: STATUS_ITEM, visible: false }
+      )
       return
     }
     const target = s.config.destination?.name ?? 'choose a destination'
@@ -174,6 +212,10 @@ export default function activate(orca: OrcaWorkerApi): void {
       item = { text: `Crashed · ${target}`, icon: 'error', tone: 'danger', tooltip: `${run.scheme} crashed: ${run.crashTitle ?? 'see the crash report'}. Click to relaunch.` }
     } else {
       item = { text: `${scheme ?? 'Run'} · ${target}`, icon: 'rocket', tone: 'neutral', tooltip: `Build & Run ${s.workspace.name} on ${target}` }
+    }
+    if (elsewhereText) {
+      item.text = `${item.text}  ·  ${elsewhereText}`
+      item.tooltip = `${item.tooltip}\nAlso: ${s.otherRuns.map((o) => `${o.run.scheme} · ${o.workspace.name}`).join(', ')}`
     }
     await orca.host.call('statusBar.update', { id: STATUS_ITEM, visible: true, ...item })
   }
@@ -341,6 +383,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       command
     })
     const now = Date.now()
+    runWorkspaces.set(workspace.path, workspace)
     setRun(workspace.path, {
       phase: 'preparing',
       startedAt: now,
@@ -356,11 +399,11 @@ export default function activate(orca: OrcaWorkerApi): void {
     return s
   }
 
-  async function stopFocused(): Promise<LaunchpadState> {
-    const workspace = await ensureFocused()
-    const run = runs.get(workspace.path)
-    await closeRunTerminal(workspace.path)
-    if (run) setRun(workspace.path, { ...run, phase: 'stopped', finishedAt: Date.now(), terminalId: undefined })
+  async function stopRun(path?: string): Promise<LaunchpadState> {
+    const target = path ?? (await ensureFocused()).path
+    const run = runs.get(target)
+    await closeRunTerminal(target)
+    if (run) setRun(target, { ...run, phase: 'stopped', finishedAt: Date.now(), terminalId: undefined })
     return publish()
   }
 
@@ -376,7 +419,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
   })
   orca.commands.register('launchpad.stop', async () => {
-    await stopFocused()
+    await stopRun()
     return 'Stopped'
   })
 
@@ -421,7 +464,18 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
 
   orca.panels.handle('run', () => runFocused())
-  orca.panels.handle('stop', () => stopFocused())
+  orca.panels.handle('stop', ({ path }) => stopRun(path))
+
+  orca.panels.handle('worktree.show', async ({ path, terminal }) => {
+    const workspace = runWorkspaces.get(path)
+    if (!workspace || !canNavigate()) return { shown: false }
+    const terminalId = runs.get(path)?.terminalId
+    if (terminal && terminalId) {
+      return { shown: (await orca.host.call('terminal.focus', { terminalId })).focused }
+    }
+    await orca.host.call('workspace.open', { workspaceId: workspace.id })
+    return { shown: true }
+  })
 
   orca.panels.handle('simulator.createForWorktree', async ({ baseUdid }) => {
     const workspace = await ensureFocused()

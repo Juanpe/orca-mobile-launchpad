@@ -83,11 +83,18 @@ export type WorkspaceInfo = {
   path: string
 }
 
+/** A run in a worktree other than the focused one. */
+export type OtherRun = { workspace: WorkspaceInfo; run: RunState }
+
 export type LaunchpadState = {
   workspace: WorkspaceInfo | null
   projects: ProjectRef[]
   config: WorkspaceConfig
   run: RunState
+  /** Runs in other worktrees that are in progress, running, or ended badly a moment ago. */
+  otherRuns: OtherRun[]
+  /** Whether Orca lets the plugin switch worktrees and focus terminals (`workspace:write`). */
+  canNavigate: boolean
 }
 
 export const ACTIVE_PHASES: readonly RunPhase[] = [

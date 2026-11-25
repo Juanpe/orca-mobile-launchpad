@@ -142,3 +142,43 @@ test('a failed build reports its errors and log tail', async () => {
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('a run keeps showing, and the status bar says so, after switching worktree', async () => {
+  const root = await fakeWorktree()
+  const other = await mkdtemp(join(tmpdir(), 'launchpad-other-'))
+  try {
+    const host = mockHost({
+      results: {
+        'workspace.readContext': { workspaceId: 'ws-1', branch: 'feature/x', displayName: 'bill-customer', terminals: [] },
+        'workspace.list': {
+          workspaces: [
+            { id: 'ws-1', kind: 'worktree', name: 'bill-customer', path: root, branch: 'feature/x', hostId: 'local' },
+            { id: 'ws-2', kind: 'worktree', name: 'web', path: other, branch: 'main', hostId: 'local' }
+          ],
+          truncated: false
+        },
+        'terminal.create': { terminalId: 't-1' },
+        'terminal.list': { terminals: [{ id: 't-1' }], truncated: false }
+      }
+    })
+    const worker = await mountWorker(main, { host, events: ['workspace.changed'], commands: ['launchpad.run', 'launchpad.stop'] })
+    await worker.request('config.update', {
+      scheme: 'App',
+      destination: { platform: 'ios', kind: 'simulator', udid: 'SIM', name: 'iPhone 18 Pro' }
+    })
+    await worker.request('run')
+    await worker.emit('workspace.changed', { context: { workspaceId: 'ws-2', branch: 'main', displayName: 'web', terminals: [] } })
+    const s = await worker.request('state.get')
+    assert.equal(s.workspace?.name, 'web')
+    assert.deepEqual(s.otherRuns.map((o) => [o.workspace.name, o.run.phase]), [['bill-customer', 'preparing']])
+    const bar = host.callsOf('statusBar.update').at(-1) as { visible: boolean; text: string }
+    assert.equal(bar.visible, true)
+    assert.match(bar.text, /1 building elsewhere/)
+    await worker.request('stop', { path: root })
+    assert.deepEqual((await worker.request('state.get')).otherRuns, [])
+    await worker.deactivate()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+    await rm(other, { recursive: true, force: true })
+  }
+})

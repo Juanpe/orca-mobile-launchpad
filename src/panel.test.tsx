@@ -7,7 +7,9 @@ const STATE: LaunchpadState = {
   workspace: { id: 'ws-1', name: 'bill-customer', branch: 'feature/bill', path: '/w' },
   projects: [{ platform: 'ios', kind: 'workspace', path: '/w/App.xcworkspace', label: 'App.xcworkspace' }],
   config: { project: '/w/App.xcworkspace', scheme: 'App', configuration: 'Debug' },
-  run: { phase: 'idle' }
+  run: { phase: 'idle' },
+  otherRuns: [],
+  canNavigate: true
 }
 
 const DEVICES: Device[] = [
@@ -48,7 +50,7 @@ test('draws the worktree, its devices and the worktree simulator button', async 
   const view = await mount(panel, { host: host() })
   assert.ok(view.find({ type: 'Heading', text: 'App' }))
   const drawn = JSON.stringify(view.tree())
-  assert.ok(drawn.indexOf('"title":"Build"') < drawn.indexOf('Destination'), 'Build settings sit above Destination')
+  assert.ok(drawn.indexOf('"title":"Build"') < drawn.indexOf('Simulators ·'), 'Build settings sit above the destination picker')
   assert.ok(view.find({ type: 'Button', text: 'Simulator for this worktree' }))
   assert.ok(view.find({ type: 'ListItem', label: /iPhone 18 Pro/ }))
   await view.select({ type: 'Tabs' }, 'devices')
@@ -69,7 +71,7 @@ test('picking a device saves it as the destination; Build & Run asks the worker'
   await view.press({ text: 'Build & Run' })
   assert.equal(runs, 1)
   await view.post('state.changed', { ...STATE, run: { phase: 'building', scheme: 'App', destinationName: 'Wifi iPhone' } })
-  assert.ok(view.find({ type: 'Badge', text: 'Building' }))
+  assert.ok(view.find({ type: 'Badge', text: '● Building' }))
   assert.ok(view.find({ type: 'Progress' }))
   assert.ok(view.find({ text: 'Relaunch' }))
   assert.deepEqual(view.errors, [])
@@ -143,4 +145,46 @@ test('progress follows the phase and the last build time', () => {
   const late = progressOf({ phase: 'building', phaseStartedAt: t0, estimatedBuildMs: 100_000 }, t0 + 1_000_000)
   assert.ok(late < 84, String(late))
   assert.equal(progressOf({ phase: 'running' }, t0), 100)
+})
+
+test('runs in other worktrees stay visible, with progress, navigation and stop', async () => {
+  const stops: unknown[] = []
+  const shows: unknown[] = []
+  const elsewhere: LaunchpadState = {
+    ...STATE,
+    projects: [],
+    otherRuns: [
+      {
+        workspace: { id: 'ws-2', name: 'parity-kitchen', branch: 'feature/kitchen', path: '/w2' },
+        run: { phase: 'building', scheme: 'Waiter', destinationName: 'iPhone 18 Pro', startedAt: 1, phaseStartedAt: Date.now(), terminalId: 't-2' }
+      }
+    ]
+  }
+  const view = await mount(panel, {
+    host: mockHost({
+      requests: {
+        'state.get': () => elsewhere,
+        'devices.list': () => ({ devices: [] }),
+        stop: (input) => {
+          stops.push(input)
+          return { ...elsewhere, otherRuns: [] }
+        },
+        'worktree.show': (input) => {
+          shows.push(input)
+          return { shown: true }
+        }
+      }
+    })
+  })
+  const summary = view.summary().join('\n')
+  assert.match(summary, /No mobile app here/)
+  assert.ok(view.find({ type: 'Heading', text: 'Other worktrees · 1' }))
+  assert.ok(view.find({ type: 'Progress' }))
+  await view.press({ type: 'Button', text: 'Terminal' })
+  assert.deepEqual(shows, [{ path: '/w2', terminal: true }])
+  await view.press({ type: 'Button', text: 'Stop' })
+  assert.deepEqual(stops, [{ path: '/w2' }])
+  assert.equal(view.find({ type: 'Heading', text: 'Other worktrees · 1' }), null)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
 })

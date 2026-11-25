@@ -11,6 +11,9 @@ in worktrees that contain a mobile project (iOS today, Android next).
   devices). Each worktree remembers its own settings.
 - **Simulator per worktree**: "Simulator for this worktree" creates `<worktree> iPhone` with the
   model and iOS version of the selected simulator, so several branches can run side by side.
+- **Runs in other worktrees** stay visible: the panel lists them under "Other worktrees" with their
+  progress, failure or crash, and Stop / Go to worktree / Terminal; the status bar adds
+  `⠋ 1 building elsewhere`.
 - **Command palette**: `Mobile Launchpad: Build & Run` (`Mod+Alt+R`) and `Mobile Launchpad: Stop`.
 
 ## How it works

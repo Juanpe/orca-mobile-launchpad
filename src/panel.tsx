@@ -35,6 +35,7 @@ import {
   worktreeSimulatorName,
   type Device,
   type LaunchpadState,
+  type OtherRun,
   type RunPhase,
   type WorkspaceConfig
 } from './types'
@@ -67,17 +68,27 @@ async function guarded(label: string, action: () => Promise<unknown>): Promise<v
 
 async function loadSchemes(refresh = false): Promise<void> {
   set(schemes, null)
-  const answer = await plugin.request('schemes.list', { refresh }, { timeoutMs: 120_000 })
-  set(schemes, answer.schemes)
-  set(appSchemes, answer.appSchemes ?? [])
-  set(schemesError, answer.error)
+  try {
+    const answer = await plugin.request('schemes.list', { refresh }, { timeoutMs: 120_000 })
+    set(schemes, answer.schemes)
+    set(appSchemes, answer.appSchemes ?? [])
+    set(schemesError, answer.error)
+  } catch (e) {
+    set(schemes, [])
+    set(schemesError, (e as Error).message)
+  }
 }
 
 async function loadDevices(): Promise<void> {
   set(devices, null)
-  const answer = await plugin.request('devices.list', undefined, { timeoutMs: 60_000 })
-  set(devices, answer.devices)
-  set(devicesError, answer.error)
+  try {
+    const answer = await plugin.request('devices.list', undefined, { timeoutMs: 60_000 })
+    set(devices, answer.devices)
+    set(devicesError, answer.error)
+  } catch (e) {
+    set(devices, [])
+    set(devicesError, (e as Error).message)
+  }
 }
 
 /** Saves part of the workspace's config and draws the state the worker answers. */
@@ -104,10 +115,12 @@ export function setup(ctx: PanelContext): void {
   void loadDevices()
   // Animate only while something moves and the panel is on screen.
   const timer = setInterval(() => {
-    const run = read(state)?.run
-    if (!run || !read(ctx.visible)) return
+    const current = read(state)
+    if (!current || !read(ctx.visible)) return
+    const run = current.run
     const celebrating = run.phase === 'running' && Date.now() - (run.phaseStartedAt ?? 0) < LAUNCH_CELEBRATION_MS
-    if (isActive(run.phase) || celebrating) update(tick, (n) => n + 1)
+    const elsewhere = current.otherRuns.some((o) => isActive(o.run.phase))
+    if (isActive(run.phase) || celebrating || elsewhere) update(tick, (n) => n + 1)
   }, ANIMATION_MS)
   ;(timer as { unref?: () => void }).unref?.() // never keeps a test process alive
   ctx.signal.addEventListener('abort', () => clearInterval(timer))
@@ -198,18 +211,20 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
   const live = active || run.phase === 'running'
   const destination = s.config.destination
   const device = read(devices)?.find((d) => d.udid === destination?.udid)
-  const where = destination
-    ? `${destination.name}${device?.kind === 'device' ? ` · ${transportLabel(device)}` : ''}`
-    : 'automatic destination'
   const project = s.projects.find((p) => p.path === s.config.project) ?? s.projects[0]
   const projectName = project?.label.split('/').pop()?.replace(/\.(xcworkspace|xcodeproj)$/, '')
   const title = s.config.scheme ?? projectName ?? 'App'
-  const branch = s.workspace?.branch ?? ''
-  const subtitle = !branch
-    ? s.workspace?.name ?? ''
-    : branch.includes(s.workspace?.name ?? '\u0000')
-      ? branch
-      : `${s.workspace?.name} · ${branch}`
+  // The branch says which worktree this is; fall back to the worktree's name without one.
+  const branch = s.workspace?.branch ? `⎇ ${s.workspace.branch}` : s.workspace?.name ?? ''
+  const destinationTitle = destination?.name ?? 'Automatic destination'
+  const destinationDetail = !destination
+    ? 'The worktree simulator, or a booted one'
+    : device
+      ? `${device.kind === 'simulator' ? 'Simulator · ' : ''}${deviceDescription(device)}`
+      : destination.kind === 'simulator'
+        ? 'Simulator'
+        : 'iPhone'
+  const destinationIcon = device ? deviceIcon(device) : destination?.kind === 'device' ? 'globe' : 'blocks'
   const disabled = read(busy) !== null
   const frame = read(tick)
   const now = Date.now()
@@ -218,25 +233,27 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
   const celebrating = run.phase === 'running' && now - (run.phaseStartedAt ?? 0) < LAUNCH_CELEBRATION_MS
   return (
     <Box border={live || run.phase === 'failed' || run.phase === 'crashed' ? phase.tone : true} radius="lg" padding="md" background="card" gap="sm">
-      <Row justify="between" align="start">
-        <Stack gap="none">
-          <Text muted size="xs" weight="medium" truncate>
-            {subtitle}
-          </Text>
-          <Heading level={1}>{title}</Heading>
+      <Stack gap="none">
+        <Row justify="between" align="center" gap="sm">
           <Row gap="xs" align="center">
-            {destination ? (
-              <Badge tone={destination.kind === 'device' ? 'accent' : 'neutral'}>
-                {destination.kind === 'device' ? 'iPhone' : 'Simulator'}
-              </Badge>
-            ) : null}
-            <Text size="sm" truncate>
-              {`→ ${where}`}
-            </Text>
+            <Heading level={1}>{title}</Heading>
+            <Badge tone="neutral">{s.config.configuration}</Badge>
           </Row>
-        </Stack>
-        <Badge tone={phase.tone}>{phase.label}</Badge>
-      </Row>
+          <Badge tone={phase.tone}>{`● ${phase.label}`}</Badge>
+        </Row>
+        <Text muted size="xs" truncate>
+          {branch}
+        </Text>
+      </Stack>
+
+      <List label="Destination">
+        <ListItem
+          title={destinationTitle}
+          description={destinationDetail}
+          icon={destinationIcon}
+          onPress={() => set(destinationTab, destination?.kind === 'device' ? 'devices' : 'simulators')}
+        />
+      </List>
 
       {active ? (
         <Stack gap="xs">
@@ -270,24 +287,108 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
         </Text>
       ) : null}
 
-      <Row gap="xs">
-        <Button
-          icon={live ? 'refresh' : 'play'}
-          variant="solid"
-          tone="accent"
-          disabled={disabled}
-          tooltip={destination ? 'Mod+Alt+R' : 'No destination chosen: uses the worktree simulator or a booted one (Mod+Alt+R)'}
-          onPress={() => guarded('run', async () => receive(await plugin.request('run', undefined, { timeoutMs: 120_000 })))}
-        >
-          {live ? 'Relaunch' : 'Build & Run'}
-        </Button>
+      <Box direction="row" gap="xs" align="stretch">
+        <Box grow>
+          <Stack align="stretch">
+            <Button
+              icon={live ? 'refresh' : 'play'}
+              variant="solid"
+              tone="accent"
+              disabled={disabled}
+              tooltip="Mod+Alt+R"
+              onPress={() => guarded('run', async () => receive(await plugin.request('run', undefined, { timeoutMs: 120_000 })))}
+            >
+              {live ? 'Relaunch' : 'Build & Run'}
+            </Button>
+          </Stack>
+        </Box>
         {live ? (
-          <Button icon="stop" variant="outline" tone="danger" disabled={disabled} onPress={() => guarded('stop', async () => receive(await plugin.request('stop')))}>
+          <IconButton
+            icon="stop"
+            label="Stop"
+            tooltip="Stop"
+            variant="outline"
+            tone="danger"
+            disabled={disabled}
+            onPress={() => guarded('stop', async () => receive(await plugin.request('stop', {})))}
+          />
+        ) : null}
+      </Box>
+    </Box>
+  )
+}
+
+// ── Other worktrees ───────────────────────────────────────────────────────────────────────────
+
+function OtherRunCard({ other, canNavigate }: { other: OtherRun; canNavigate: boolean }) {
+  const { workspace, run } = other
+  const phase = PHASE[run.phase]
+  const active = isActive(run.phase)
+  const live = active || run.phase === 'running'
+  read(tick) // redraw with the animation
+  const progress = progressOf(run, Date.now())
+  const show = (terminal: boolean) =>
+    guarded('show', () => plugin.request('worktree.show', { path: workspace.path, terminal }))
+  return (
+    <Box border={phase.tone === 'neutral' ? true : phase.tone} radius="md" padding="sm" gap="xs">
+      <Row justify="between" align="center" gap="xs">
+        <Text weight="semibold" truncate>
+          {run.scheme ?? workspace.name}
+        </Text>
+        <Badge tone={phase.tone}>{`● ${phase.label}`}</Badge>
+      </Row>
+      <Text muted size="xs" truncate>
+        {`⎇ ${workspace.branch || workspace.name} → ${run.destinationName ?? ''}`}
+      </Text>
+      {active ? (
+        <Stack gap="xs">
+          <Progress label={`${run.scheme} ${phase.label}`} labelHidden value={progress} />
+          <Text size="xs" muted>
+            {`${progress}% · `}
+            {run.startedAt ? <RelativeTime at={run.startedAt} format="duration" /> : null}
+          </Text>
+        </Stack>
+      ) : run.phase === 'failed' || run.phase === 'crashed' ? (
+        <Text size="xs" tone="danger" truncate>
+          {run.phase === 'crashed' ? run.crashTitle ?? 'Crashed' : run.errors?.[0] ?? run.message ?? 'Build failed'}
+        </Text>
+      ) : null}
+      <Row gap="xs" wrap>
+        {canNavigate ? (
+          <Button size="sm" variant="ghost" icon="branch" onPress={() => show(false)}>
+            Go to worktree
+          </Button>
+        ) : null}
+        {canNavigate && run.terminalId ? (
+          <Button size="sm" variant="ghost" icon="terminal" onPress={() => show(true)}>
+            Terminal
+          </Button>
+        ) : null}
+        {live ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            tone="danger"
+            icon="stop"
+            onPress={() => guarded('stop', async () => receive(await plugin.request('stop', { path: workspace.path })))}
+          >
             Stop
           </Button>
         ) : null}
       </Row>
     </Box>
+  )
+}
+
+function OtherRuns({ s }: { s: LaunchpadState }) {
+  if (s.otherRuns.length === 0) return null
+  return (
+    <Stack gap="sm">
+      <Heading level={3}>{`Other worktrees · ${s.otherRuns.length}`}</Heading>
+      {s.otherRuns.map((other) => (
+        <OtherRunCard other={other} canNavigate={s.canNavigate} />
+      ))}
+    </Stack>
   )
 }
 
@@ -540,15 +641,23 @@ export default function Panel() {
   const failure = read(error)
   if (!s) return <Skeleton lines={6} label="Loading" />
   if (!s.workspace) {
-    return <EmptyState icon="rocket" title="No active worktree" description="Open a worktree with a mobile app." />
+    return (
+      <Stack gap="md">
+        <EmptyState icon="rocket" title="No active worktree" description="Open a worktree with a mobile app." />
+        <OtherRuns s={s} />
+      </Stack>
+    )
   }
   if (s.projects.length === 0) {
     return (
-      <EmptyState
-        icon="rocket"
-        title="No mobile app here"
-        description={`${s.workspace.name} has no iOS project at its root or in ios/, app/ or mobile/ios.`}
-      />
+      <Stack gap="md">
+        <EmptyState
+          icon="rocket"
+          title="No mobile app here"
+          description={`${s.workspace.name} has no iOS project at its root or in ios/, app/ or mobile/ios.`}
+        />
+        <OtherRuns s={s} />
+      </Stack>
     )
   }
   return (
@@ -557,6 +666,7 @@ export default function Panel() {
       <SchemeWarning s={s} />
       {s.run.phase === 'failed' ? <BuildFailure run={s.run} /> : null}
       {s.run.phase === 'crashed' ? <CrashReport run={s.run} /> : null}
+      <OtherRuns s={s} />
       {failure ? (
         <Callout tone="danger" title="Error" icon="error">
           <Text size="sm">{failure}</Text>

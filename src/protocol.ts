@@ -18,8 +18,10 @@ declare module 'orca' {
     'config.update': { input: Partial<WorkspaceConfig>; output: LaunchpadState }
     /** Build & run the focused workspace with its config. */
     run: { output: LaunchpadState }
-    /** Stop the focused workspace's run. */
-    stop: { output: LaunchpadState }
+    /** Stop the focused workspace's run, or the one in the worktree at `path`. */
+    stop: { input: { path?: string }; output: LaunchpadState }
+    /** Shows the worktree at `path` in Orca, or its run's terminal. */
+    'worktree.show': { input: { path: string; terminal?: boolean }; output: { shown: boolean } }
     /** Opens the last run's build log or crash report in Console. */
     'log.open': { input: { kind: 'build' | 'crash' }; output: { opened: boolean } }
     /** Create (or reuse) the "<worktree> iPhone" simulator from `baseUdid`'s model and OS, and
