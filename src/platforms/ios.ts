@@ -149,7 +149,8 @@ export async function createSimulator(name: string, base: Device): Promise<strin
 
 /** Where Launchpad keeps its runner script and status files. */
 export async function workDir(): Promise<string> {
-  const dir = join(tmpdir(), 'orca-launchpad')
+  // Tests point it elsewhere (MOBILE_LAUNCHPAD_WORKDIR) so they never touch real runs' files.
+  const dir = process.env.MOBILE_LAUNCHPAD_WORKDIR || join(tmpdir(), 'orca-launchpad')
   await mkdir(dir, { recursive: true })
   return dir
 }
@@ -245,6 +246,13 @@ SCHEME="$6"; CONFIG="$7"; OPEN_SIM="$8"; LOG="$9"
 status() { printf '%s\n' "$*" > "$STATUS"; }
 step() { printf '\n\033[1;36m▸ %s\033[0m\n' "$*"; printf '▸ %s\n' "$*" >> "$LOG"; }
 fail() { printf '✗ %s\n' "$*" >> "$LOG"; status "failed:$*"; printf '\n\033[1;31m✗ %s\033[0m\n' "$*"; exit 1; }
+LAUNCH_OUT="$LOG.launch"
+# Runs the app's console, keeping a copy of its output to tell a failed launch from an app that ended.
+console() {
+  : > "$LAUNCH_OUT"
+  (set -o pipefail; "$@" 2>&1 | tee "$LAUNCH_OUT")
+}
+
 trap 'status stopped; printf "\n\033[33m■ Stopped\033[0m\n"; exit 130' INT TERM
 
 SIGNING=""
@@ -294,14 +302,20 @@ if [ "$KIND" = simulator ]; then
   step "Launching (Stop in Mobile Launchpad ends the app)"
   touch "$MARK"
   status running
-  xcrun simctl launch --console --terminate-running-process "$UDID" "$BUNDLE_ID" || fail "Could not launch the app"
+  # The console ends with an error too when the app is closed or replaced by another launch:
+  # it only failed to launch if simctl never printed the app's pid.
+  console xcrun simctl launch --console --terminate-running-process "$UDID" "$BUNDLE_ID" \
+    || grep -q "$BUNDLE_ID: [0-9]" "$LAUNCH_OUT" || fail "Could not launch the app"
 else
   xcrun devicectl device install app --device "$UDID" "$APP" || fail "Could not install on the device"
   status launching
   step "Launching (Stop in Mobile Launchpad ends the app)"
   touch "$MARK"
   status running
-  xcrun devicectl device process launch --device "$UDID" --terminate-existing --console "$BUNDLE_ID" || fail "Could not launch the app (is the iPhone locked?)"
+  # The console ends with an error too when the app is closed on the iPhone or another worktree
+  # launches it: it only failed to launch if devicectl never said it launched it.
+  console xcrun devicectl device process launch --device "$UDID" --terminate-existing --console "$BUNDLE_ID" \
+    || grep -q "Launched application" "$LAUNCH_OUT" || fail "Could not launch the app (is the iPhone locked?)"
 fi
 
 # The app's console ended: a crash on the simulator leaves a report on this Mac.

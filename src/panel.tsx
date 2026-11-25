@@ -185,27 +185,10 @@ const STEPS: { phase: RunPhase; label: string }[] = [
   { phase: 'launching', label: 'Launch' }
 ]
 
-/** Prepare ✓ · Build ● · Install ○ · Launch ○ */
-function Steps({ phase }: { phase: RunPhase }) {
-  const current = STEPS.findIndex((s) => s.phase === phase)
-  return (
-    <Row gap="xs" wrap>
-      {STEPS.map((step, i) => (
-        <Badge tone={i < current ? 'success' : i === current ? 'accent' : 'neutral'}>
-          {`${i < current ? '✓' : i === current ? '●' : '○'} ${step.label}`}
-        </Badge>
-      ))}
-    </Row>
-  )
-}
-
-const TRACK = 18
-
-/** A rocket that climbs a track as the build progresses: ━━━━━━🚀┄┄┄┄┄ */
-function rocketTrack(progress: number, frame: number): string {
-  const position = Math.min(TRACK - 1, Math.floor((progress / 100) * TRACK))
-  const flame = frame % 2 ? '·' : '∙'
-  return `${'━'.repeat(Math.max(0, position - 1))}${position > 0 ? flame : ''}🚀${'┄'.repeat(TRACK - 1 - position)}`
+/** "Step 2 of 4" while a run is in one of its steps. */
+function stepOf(phase: RunPhase): string {
+  const i = STEPS.findIndex((step) => step.phase === phase)
+  return i < 0 ? '' : `Step ${i + 1} of ${STEPS.length}`
 }
 
 function transportLabel(d: { transport?: 'wifi' | 'cable' }): string {
@@ -238,7 +221,6 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
   const frame = read(tick)
   const now = Date.now()
   const progress = progressOf(run, now)
-  const dots = ['', '.', '..', '...'][Math.floor(frame / 3) % 4]
   const celebrating = run.phase === 'running' && now - (run.phaseStartedAt ?? 0) < LAUNCH_CELEBRATION_MS
   return (
     <Box border={live || run.phase === 'failed' || run.phase === 'crashed' ? phase.tone : true} radius="lg" padding="md" background="card" gap="sm">
@@ -266,11 +248,12 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
 
       {active ? (
         <Stack gap="xs">
-          <Steps phase={run.phase} />
           <Row gap="xs" align="center" justify="between">
             <Row gap="xs" align="center">
               <Spinner label={phase.label} labelHidden />
-              <Text size="sm" weight="medium">{`${phase.label}${dots}`}</Text>
+              <Text size="sm" muted>
+                {stepOf(run.phase)}
+              </Text>
             </Row>
             <Text size="xs" muted>
               {`${progress}% · `}
@@ -278,9 +261,6 @@ function LaunchCard({ s }: { s: LaunchpadState }) {
             </Text>
           </Row>
           <Progress label={phase.label} labelHidden value={progress} />
-          <Text size="sm" muted>
-            {rocketTrack(progress, frame)}
-          </Text>
         </Stack>
       ) : celebrating ? (
         <Stack gap="xs">

@@ -32,6 +32,7 @@ function hostFor(root: string, extra: Record<string, unknown> = {}) {
 const fakeRunnerDir = await mkdtemp(join(tmpdir(), 'launchpad-runner-'))
 process.env.MOBILE_LAUNCHPAD_RUNNER = join(fakeRunnerDir, 'runner.sh')
 await writeFile(process.env.MOBILE_LAUNCHPAD_RUNNER, 'sleep 4\n')
+process.env.MOBILE_LAUNCHPAD_WORKDIR = join(fakeRunnerDir, 'work')
 
 test('finds root and ios/ projects, prefers the workspace, ignores other folders', async () => {
   const root = await fakeWorktree()
