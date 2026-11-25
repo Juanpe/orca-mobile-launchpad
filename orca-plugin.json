@@ -71,5 +71,9 @@
     {
       "kind": "storage:own"
     }
-  ]
+  ],
+  "cover": {
+    "path": "assets/cover.png",
+    "alt": "Mobile Launchpad's panel building one worktree's app while two other worktrees run, next to the tagline: Build & Run. Any worktree. Any phone."
+  }
 }
