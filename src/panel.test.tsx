@@ -1,6 +1,7 @@
 import { assert, mockHost, mount, test } from 'orca/testing'
 import type { Device, LaunchpadState } from './types'
 import * as panel from './panel'
+import { progressOf } from './panel'
 
 const STATE: LaunchpadState = {
   workspace: { id: 'ws-1', name: 'bill-customer', branch: 'feature/bill', path: '/w' },
@@ -14,12 +15,18 @@ const DEVICES: Device[] = [
   { platform: 'ios', kind: 'simulator', udid: 'A', name: 'iPhone 18 Pro', state: 'booted', os: '27.0', deviceTypeId: 'dt', runtimeId: 'rt' }
 ]
 
-function host(onUpdate?: (patch: unknown) => void, onRun?: () => void) {
-  let state = STATE
+const opened: string[] = []
+
+function host(onUpdate?: (patch: unknown) => void, onRun?: () => void, initial: LaunchpadState = STATE) {
+  let state = initial
   return mockHost({
     requests: {
       'state.get': () => state,
-      'schemes.list': () => ({ schemes: ['App', 'AppTests'] }),
+      'schemes.list': () => ({ schemes: ['App', 'AppKit', 'AppTests'], appSchemes: ['App'] }),
+      'log.open': ({ kind }) => {
+        opened.push(kind)
+        return { opened: true }
+      },
       'devices.list': () => ({ devices: DEVICES }),
       'config.update': (patch) => {
         onUpdate?.(patch)
@@ -80,4 +87,60 @@ test('empty state without an Xcode project', async () => {
   })
   assert.match(view.summary().join('\n'), /No mobile app here/)
   await view.unmount()
+})
+
+test('a failed build shows its errors, the log and opens it in Console', async () => {
+  const failed: LaunchpadState = {
+    ...STATE,
+    run: {
+      phase: 'failed',
+      scheme: 'App',
+      message: 'Build failed',
+      errors: ['Foo.swift:12:5: error: cannot find Bar in scope'],
+      logTail: 'line 1\nline 2',
+      logPath: '/tmp/build.log'
+    }
+  }
+  opened.length = 0
+  const view = await mount(panel, { host: host(undefined, undefined, failed) })
+  const drawn = JSON.stringify(view.tree())
+  assert.ok(drawn.includes('cannot find Bar in scope'))
+  assert.ok(view.find({ type: 'Collapsible' , label: /Build log/ }) ?? drawn.includes('Build log'))
+  await view.press({ type: 'Button', text: 'Open full log in Console' })
+  assert.deepEqual(opened, ['build'])
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('a crash shows the report summary', async () => {
+  const crashed: LaunchpadState = {
+    ...STATE,
+    run: { phase: 'crashed', scheme: 'App', crashTitle: 'EXC_BAD_ACCESS (SIGSEGV)', crashSummary: 'App — EXC_BAD_ACCESS', crashPath: '/tmp/App.ips' }
+  }
+  opened.length = 0
+  const view = await mount(panel, { host: host(undefined, undefined, crashed) })
+  assert.ok(JSON.stringify(view.tree()).includes('EXC_BAD_ACCESS (SIGSEGV)'))
+  await view.press({ type: 'Button', text: 'Open crash report in Console' })
+  assert.deepEqual(opened, ['crash'])
+  await view.unmount()
+})
+
+test('a scheme that builds no app gets a warning with the app scheme', async () => {
+  const patches: unknown[] = []
+  const library: LaunchpadState = { ...STATE, config: { ...STATE.config, scheme: 'AppKit' } }
+  const view = await mount(panel, { host: host((p) => patches.push(p), undefined, library) })
+  assert.match(view.summary().join('\n'), /AppKit doesn't build an app/)
+  await view.press({ type: 'Button', text: 'Use App' })
+  assert.deepEqual(patches, [{ scheme: 'App' }])
+  await view.unmount()
+})
+
+test('progress follows the phase and the last build time', () => {
+  const t0 = 1_000_000
+  assert.equal(progressOf({ phase: 'building', phaseStartedAt: t0, estimatedBuildMs: 100_000 }, t0), 12)
+  const half = progressOf({ phase: 'building', phaseStartedAt: t0, estimatedBuildMs: 100_000 }, t0 + 50_000)
+  assert.ok(half > 40 && half < 50, String(half))
+  const late = progressOf({ phase: 'building', phaseStartedAt: t0, estimatedBuildMs: 100_000 }, t0 + 1_000_000)
+  assert.ok(late < 84, String(late))
+  assert.equal(progressOf({ phase: 'running' }, t0), 100)
 })

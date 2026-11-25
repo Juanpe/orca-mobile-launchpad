@@ -1,6 +1,10 @@
 import { assert, test } from 'orca/testing'
 import {
   compareVersions,
+  extractBuildErrors,
+  logTail,
+  schemeBuildsApp,
+  summarizeCrash,
   parseDevicectlDevices,
   parseSchemes,
   parseSimctlDevices,
@@ -76,4 +80,50 @@ test('preferred destination: worktree simulator, then booted iPhone, then newest
 test('compareVersions', () => {
   assert.ok(compareVersions('27.1', '27.0.5') > 0)
   assert.equal(compareVersions('27.0', '27.0.0'), 0)
+})
+
+test('preferred scheme: an app scheme beats a package scheme', () => {
+  assert.equal(
+    preferredScheme(['QamareroAPI', 'QamareroWaiter', 'QamareroWaiterApp'], '/x/Qamarero.xcworkspace', ['QamareroWaiter']),
+    'QamareroWaiter'
+  )
+})
+
+test('schemeBuildsApp reads BuildableName', () => {
+  assert.equal(schemeBuildsApp('<BuildableReference BuildableName = "Waiter.app" />'), true)
+  assert.equal(schemeBuildsApp('<BuildableReference BuildableName = "QamareroAPI" />'), false)
+})
+
+test('build errors: compiler errors, shortened paths, no duplicates', () => {
+  const log = [
+    'CompileSwift normal arm64 /Users/me/app/Sources/Foo.swift',
+    '/Users/me/app/Sources/Foo.swift:12:5: error: cannot find Bar in scope',
+    '/Users/me/app/Sources/Foo.swift:12:5: error: cannot find Bar in scope',
+    'warning: something harmless',
+    '** BUILD FAILED **'
+  ].join('\n')
+  assert.deepEqual(extractBuildErrors(log), ['Foo.swift:12:5: error: cannot find Bar in scope', '** BUILD FAILED **'])
+})
+
+test('log tail keeps whole lines within the limit', () => {
+  const log = Array.from({ length: 500 }, (_, i) => `line ${i}`).join('\n')
+  const tail = logTail(log, 10)
+  assert.equal(tail.split('\n').length, 10)
+  assert.ok(tail.endsWith('line 499'))
+})
+
+test('crash summary: exception, reason and the crashed thread', () => {
+  const header = JSON.stringify({ app_name: 'Waiter', timestamp: 'now' })
+  const body = JSON.stringify({
+    exception: { type: 'EXC_BREAKPOINT', signal: 'SIGTRAP' },
+    asi: { libswiftCore: ['Fatal error: Index out of range'] },
+    faultingThread: 1,
+    threads: [{ frames: [] }, { queue: 'com.apple.main-thread', frames: [{ symbol: 'CartView.total', imageIndex: 0 }] }],
+    usedImages: [{ name: 'Waiter' }]
+  })
+  const { title, summary } = summarizeCrash(`${header}\n${body}`)
+  assert.equal(title, 'EXC_BREAKPOINT (SIGTRAP)')
+  assert.match(summary, /Fatal error: Index out of range/)
+  assert.match(summary, /Thread 1 crashed \(com.apple.main-thread\)/)
+  assert.match(summary, /Waiter\s+CartView.total/)
 })

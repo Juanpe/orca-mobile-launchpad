@@ -2,18 +2,26 @@
 // the status bar item, and runs builds in an Orca terminal of that workspace.
 import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
+import { exec } from './exec'
 import { join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
 import './protocol'
 import {
   createSimulator,
   findProjects,
+  listAppSchemes,
   listDevices,
   listSchemes,
   prepareRunCommand,
   workDir
 } from './platforms/ios'
-import { preferredDestination, preferredScheme } from './platforms/ios-parse'
+import {
+  extractBuildErrors,
+  logTail,
+  preferredDestination,
+  preferredScheme,
+  summarizeCrash
+} from './platforms/ios-parse'
 import {
   isActive,
   worktreeSimulatorName,
@@ -28,20 +36,47 @@ import {
 
 const STATUS_ITEM = 'run'
 const POLL_MS = 1000
+const SPIN_MS = 250
+const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 const DEFAULT_CONFIG: WorkspaceConfig = { configuration: 'Debug' }
 
 type Context = { workspaceId?: string; branch: string; displayName: string } | null
+
+/** Timers the worker owns; `deactivate` clears them so a disabled plugin leaves nothing running. */
+const timers = new Set<ReturnType<typeof setInterval>>()
+
+function every(ms: number, fn: () => void): ReturnType<typeof setInterval> {
+  const timer = setInterval(fn, ms)
+  ;(timer as { unref?: () => void }).unref?.() // Orca keeps the worker alive, not its timers
+  timers.add(timer)
+  return timer
+}
+
+function cancel(timer: ReturnType<typeof setInterval> | undefined): void {
+  if (!timer) return
+  clearInterval(timer)
+  timers.delete(timer)
+}
+
+export function deactivate(): void {
+  for (const timer of timers) clearInterval(timer)
+  timers.clear()
+}
 
 export default function activate(orca: OrcaWorkerApi): void {
   let focused: WorkspaceInfo | null = null
   let focusedProjects: ProjectRef[] = []
   const runs = new Map<string, RunState>() // by workspace path
   const pollers = new Map<string, ReturnType<typeof setInterval>>()
-  const schemeCache = new Map<string, string[]>()
+  const schemeCache = new Map<string, { schemes: string[]; appSchemes: string[] }>()
+  let spinTimer: ReturnType<typeof setInterval> | undefined
+  let spinFrame = 0
+  let spinBackoff = 0
 
   const configKey = (path: string) => `config:${path}`
-  const statusFileFor = async (path: string) =>
-    join(await workDir(), `status-${createHash('sha1').update(path).digest('hex').slice(0, 12)}.txt`)
+  const fileFor = async (path: string, kind: 'status' | 'build') =>
+    join(await workDir(), `${kind}-${createHash('sha1').update(path).digest('hex').slice(0, 12)}.${kind === 'build' ? 'log' : 'txt'}`)
+  const buildTimeKey = (path: string) => `buildMs:${path}`
 
   async function readConfig(path: string): Promise<WorkspaceConfig> {
     const stored = await orca.storage.get(configKey(path))
@@ -84,11 +119,34 @@ export default function activate(orca: OrcaWorkerApi): void {
     })
   }
 
+  let lastState: LaunchpadState | null = null
+
   async function publish(): Promise<LaunchpadState> {
     const s = await state()
+    lastState = s
     orca.panels.post('state.changed', s)
     await updateStatusBar(s).catch((e) => orca.log(`statusBar.update: ${(e as Error).message}`))
+    animateStatusBar(s)
     return s
+  }
+
+  /** Spins the status bar item while the focused workspace builds. */
+  function animateStatusBar(s: LaunchpadState): void {
+    const active = !!s.workspace && isActive(s.run.phase)
+    if (active && !spinTimer) {
+      spinTimer = every(SPIN_MS, () => {
+        if (spinBackoff > 0) return void spinBackoff--
+        spinFrame = (spinFrame + 1) % SPINNER.length
+        if (lastState) {
+          updateStatusBar(lastState).catch((e: Error & { code?: string }) => {
+            spinBackoff = e.code === 'rate_limited' ? 8 : 0
+          })
+        }
+      })
+    } else if (!active && spinTimer) {
+      cancel(spinTimer)
+      spinTimer = undefined
+    }
   }
 
   async function updateStatusBar(s: LaunchpadState): Promise<void> {
@@ -107,13 +165,15 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
     let item: { text: string; icon: 'rocket' | 'hammer' | 'play' | 'error' | 'stop'; tone: 'neutral' | 'accent' | 'success' | 'danger'; tooltip: string }
     if (isActive(run.phase)) {
-      item = { text: `${labels[run.phase]}… · ${target}`, icon: 'hammer', tone: 'accent', tooltip: `${run.scheme} → ${target}. Click to restart.` }
+      item = { text: `${SPINNER[spinFrame]} ${labels[run.phase]} · ${target}`, icon: 'hammer', tone: 'accent', tooltip: `${run.scheme} → ${target}. Click to restart.` }
     } else if (run.phase === 'running') {
       item = { text: `${run.scheme} · ${target}`, icon: 'play', tone: 'success', tooltip: `Running on ${target}. Click to rebuild and relaunch.` }
     } else if (run.phase === 'failed') {
       item = { text: `Failed · ${target}`, icon: 'error', tone: 'danger', tooltip: `${run.message ?? 'Build failed'}. Click to retry.` }
+    } else if (run.phase === 'crashed') {
+      item = { text: `Crashed · ${target}`, icon: 'error', tone: 'danger', tooltip: `${run.scheme} crashed: ${run.crashTitle ?? 'see the crash report'}. Click to relaunch.` }
     } else {
-      item = { text: `${scheme ?? 'Run'} · ${target}`, icon: 'rocket', tone: 'neutral', tooltip: `Build & Run de ${s.workspace.name} en ${target}` }
+      item = { text: `${scheme ?? 'Run'} · ${target}`, icon: 'rocket', tone: 'neutral', tooltip: `Build & Run ${s.workspace.name} on ${target}` }
     }
     await orca.host.call('statusBar.update', { id: STATUS_ITEM, visible: true, ...item })
   }
@@ -144,11 +204,12 @@ export default function activate(orca: OrcaWorkerApi): void {
     return focused
   }
 
-  async function schemesFor(project: string, refresh = false): Promise<string[]> {
+  async function schemesFor(project: string, refresh = false): Promise<{ schemes: string[]; appSchemes: string[] }> {
     if (!refresh && schemeCache.has(project)) return schemeCache.get(project)!
-    const schemes = await listSchemes(project)
-    schemeCache.set(project, schemes)
-    return schemes
+    const [schemes, appSchemes] = await Promise.all([listSchemes(project), listAppSchemes(project)])
+    const entry = { schemes, appSchemes }
+    schemeCache.set(project, entry)
+    return entry
   }
 
   function setRun(path: string, run: RunState): void {
@@ -157,16 +218,32 @@ export default function activate(orca: OrcaWorkerApi): void {
   }
 
   function stopPolling(path: string): void {
-    const timer = pollers.get(path)
-    if (timer) clearInterval(timer)
+    cancel(pollers.get(path))
     pollers.delete(path)
+  }
+
+  /** What the panel shows after a failed build: the errors and the end of the log. */
+  async function failureDetails(logPath: string): Promise<Partial<RunState>> {
+    const log = await readFile(logPath, 'utf8').catch(() => '')
+    if (!log) return {}
+    return { errors: extractBuildErrors(log), logTail: logTail(log) }
+  }
+
+  async function crashDetails(crashPath: string): Promise<Partial<RunState>> {
+    try {
+      const { title, summary } = summarizeCrash(await readFile(crashPath, 'utf8'))
+      return { crashPath, crashTitle: title, crashSummary: summary.slice(0, 12_000) }
+    } catch (e) {
+      orca.log(`crash report ${crashPath}: ${(e as Error).message}`)
+      return { crashPath }
+    }
   }
 
   function startPolling(workspace: WorkspaceInfo, statusFile: string): void {
     stopPolling(workspace.path)
     let ticks = 0
     let last = ''
-    const timer = setInterval(async () => {
+    const timer = every(POLL_MS, async () => {
       ticks++
       const run = runs.get(workspace.path)
       if (!run) return stopPolling(workspace.path)
@@ -187,16 +264,32 @@ export default function activate(orca: OrcaWorkerApi): void {
       last = raw
       const [word, ...rest] = raw.split(':')
       const phase = word as RunPhase
-      const message = rest.join(':') || undefined
-      const finished = phase === 'failed' || phase === 'exited' || phase === 'stopped'
-      setRun(workspace.path, { ...run, phase, message, finishedAt: finished ? Date.now() : undefined })
+      const detail = rest.join(':') || undefined
+      const now = Date.now()
+      const finished = phase === 'failed' || phase === 'exited' || phase === 'stopped' || phase === 'crashed'
+      if (run.phase === 'building' && phase !== 'building' && phase !== 'failed' && run.phaseStartedAt) {
+        await orca.storage.set(buildTimeKey(workspace.path), now - run.phaseStartedAt)
+      }
+      let extra: Partial<RunState> = {}
+      if (phase === 'failed' && run.logPath) extra = await failureDetails(run.logPath)
+      if (phase === 'crashed' && detail) extra = await crashDetails(detail)
+      setRun(workspace.path, {
+        ...run,
+        phase,
+        message: phase === 'crashed' ? undefined : detail,
+        phaseStartedAt: now,
+        finishedAt: finished ? now : undefined,
+        ...extra
+      })
       if (phase === 'failed') {
-        void notify(`${run.scheme}: ${message ?? 'failed'}`, workspace.name)
+        void notify(`${run.scheme}: ${detail ?? 'failed'}`, workspace.name)
+      } else if (phase === 'crashed') {
+        void notify(`${run.scheme} crashed: ${extra.crashTitle ?? 'see the crash report'}`, workspace.name)
       } else if (phase === 'running') {
         void notify(`${run.scheme} is running on ${run.destinationName}`, workspace.name)
       }
       await publish()
-    }, POLL_MS)
+    })
     pollers.set(workspace.path, timer)
   }
 
@@ -217,7 +310,8 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (!s.config.project) throw Object.assign(new Error('No Xcode project found in this worktree'), { code: 'action_failed' })
     let config = s.config
     if (!config.scheme) {
-      const scheme = preferredScheme(await schemesFor(config.project!), config.project!)
+      const { schemes, appSchemes } = await schemesFor(config.project!)
+      const scheme = preferredScheme(schemes, config.project!, appSchemes)
       if (!scheme) throw Object.assign(new Error('The project has no shared schemes'), { code: 'action_failed' })
       config = await writeConfig(workspace.path, { scheme })
     }
@@ -228,14 +322,17 @@ export default function activate(orca: OrcaWorkerApi): void {
       config = await writeConfig(workspace.path, { destination: pickDestination(device) })
     }
     await closeRunTerminal(workspace.path)
-    const statusFile = await statusFileFor(workspace.path)
+    const statusFile = await fileFor(workspace.path, 'status')
+    const logFile = await fileFor(workspace.path, 'build')
     await writeFile(statusFile, 'preparing\n', 'utf8')
+    const estimate = await orca.storage.get(buildTimeKey(workspace.path))
     const command = await prepareRunCommand({
       projectPath: config.project!,
       scheme: config.scheme!,
       configuration: config.configuration,
       destination: config.destination!,
       statusFile,
+      logFile,
       openSimulatorApp: true
     })
     const { terminalId } = await orca.host.call('terminal.create', {
@@ -243,9 +340,13 @@ export default function activate(orca: OrcaWorkerApi): void {
       title: `▶ ${config.scheme}`,
       command
     })
+    const now = Date.now()
     setRun(workspace.path, {
       phase: 'preparing',
-      startedAt: Date.now(),
+      startedAt: now,
+      phaseStartedAt: now,
+      estimatedBuildMs: typeof estimate === 'number' ? estimate : undefined,
+      logPath: logFile,
       terminalId,
       scheme: config.scheme,
       destinationName: config.destination!.name
@@ -288,11 +389,11 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   orca.panels.handle('schemes.list', async ({ refresh }) => {
     const s = await state()
-    if (!s.config.project) return { schemes: [] }
+    if (!s.config.project) return { schemes: [], appSchemes: [] }
     try {
-      return { schemes: await schemesFor(s.config.project, refresh) }
+      return await schemesFor(s.config.project, refresh)
     } catch (e) {
-      return { schemes: [], error: (e as Error).message }
+      return { schemes: [], appSchemes: [], error: (e as Error).message }
     }
   })
 
@@ -307,6 +408,16 @@ export default function activate(orca: OrcaWorkerApi): void {
     const clean = cleared.project !== undefined && !('scheme' in patch) ? { ...cleared, scheme: undefined } : cleared
     await writeConfig(workspace.path, clean)
     return publish()
+  })
+
+  orca.panels.handle('log.open', async ({ kind }) => {
+    const workspace = await ensureFocused()
+    const run = runs.get(workspace.path)
+    const path = kind === 'crash' ? run?.crashPath : run?.logPath
+    if (!path) return { opened: false }
+    // Console reads both build logs and .ips crash reports.
+    await exec('open', ['-a', 'Console', path]).catch(() => exec('open', [path]))
+    return { opened: true }
   })
 
   orca.panels.handle('run', () => runFocused())

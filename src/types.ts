@@ -51,12 +51,25 @@ export type RunPhase =
   | 'exited'
   | 'stopped'
   | 'failed'
+  | 'crashed'
 
 export type RunState = {
   phase: RunPhase
   message?: string
   startedAt?: number
+  /** When the current phase began: drives the panel's progress animation. */
+  phaseStartedAt?: number
   finishedAt?: number
+  /** The previous successful build of this worktree took this long; null while unknown. */
+  estimatedBuildMs?: number
+  /** Full build log on disk, and what the panel shows of it after a failure. */
+  logPath?: string
+  errors?: string[]
+  logTail?: string
+  /** Crash report on disk, and its summary, when the app crashed after launching. */
+  crashPath?: string
+  crashTitle?: string
+  crashSummary?: string
   terminalId?: string
   destinationName?: string
   scheme?: string

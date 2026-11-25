@@ -1,5 +1,5 @@
 // Runs the worker over a mock host and a throwaway worktree folder with an Xcode project in it.
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { assert, mockHost, mountWorker, test } from 'orca/testing'
@@ -106,6 +106,37 @@ test('state stays plain JSON after a run reports its phases', async () => {
     const worker = await mountWorker(main, { host: hostFor(root), events: ['workspace.changed'], commands: ['launchpad.run', 'launchpad.stop'] })
     const s = await worker.request('config.update', { configuration: 'Release' })
     assert.equal(JSON.stringify(s).includes('undefined'), false)
+    await worker.deactivate()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('a failed build reports its errors and log tail', async () => {
+  const root = await fakeWorktree()
+  try {
+    const host = hostFor(root, {
+      'terminal.create': { terminalId: 't-1' },
+      'terminal.list': { terminals: [{ id: 't-1' }], truncated: false }
+    })
+    const worker = await mountWorker(main, { host, events: ['workspace.changed'], commands: ['launchpad.run', 'launchpad.stop'] })
+    await worker.request('config.update', {
+      scheme: 'App',
+      destination: { platform: 'ios', kind: 'simulator', udid: 'SIM', name: 'iPhone 18 Pro' }
+    })
+    const started = await worker.request('run')
+    assert.equal(started.run.phase, 'preparing')
+    const logPath = started.run.logPath!
+    const statusPath = logPath.replace(/build-(\w+)\.log$/, 'status-$1.txt')
+    await writeFile(logPath, '/a/b/Foo.swift:3:1: error: boom\n** BUILD FAILED **\n')
+    await writeFile(statusPath, 'failed:Build failed\n')
+    // The worker polls the status file once a second.
+    await new Promise((resolve) => setTimeout(resolve, 1300))
+    const s = await worker.request('state.get')
+    assert.equal(s.run.phase, 'failed')
+    assert.deepEqual(s.run.errors, ['Foo.swift:3:1: error: boom', '** BUILD FAILED **'])
+    assert.match(s.run.logTail ?? '', /BUILD FAILED/)
+    assert.ok(host.callsOf('notifications.show').length >= 1)
     await worker.deactivate()
   } finally {
     await rm(root, { recursive: true, force: true })

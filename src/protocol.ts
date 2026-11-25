@@ -10,7 +10,7 @@ declare module 'orca' {
     /** Schemes of the selected project (cached unless `refresh`). */
     'schemes.list': {
       input: { refresh?: boolean }
-      output: { schemes: string[]; error?: string }
+      output: { schemes: string[]; appSchemes: string[]; error?: string }
     }
     /** Simulators and physical devices for the selected project's platform. */
     'devices.list': { output: { devices: Device[]; error?: string } }
@@ -20,6 +20,8 @@ declare module 'orca' {
     run: { output: LaunchpadState }
     /** Stop the focused workspace's run. */
     stop: { output: LaunchpadState }
+    /** Opens the last run's build log or crash report in Console. */
+    'log.open': { input: { kind: 'build' | 'crash' }; output: { opened: boolean } }
     /** Create (or reuse) the "<worktree> iPhone" simulator from `baseUdid`'s model and OS, and
      *  select it. */
     'simulator.createForWorktree': {

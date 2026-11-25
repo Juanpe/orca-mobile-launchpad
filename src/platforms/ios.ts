@@ -2,10 +2,10 @@
 // An Android adapter would offer the same functions over Gradle and adb.
 import { mkdir, readdir, readFile, rm, writeFile, chmod } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, relative } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { exec, shellQuote } from '../exec'
 import type { Destination, Device, ProjectRef } from '../types'
-import { parseDevicectlDevices, parseSchemes, parseSimctlDevices } from './ios-parse'
+import { parseDevicectlDevices, parseSchemes, parseSimctlDevices, schemeBuildsApp } from './ios-parse'
 
 /** Where a repository keeps its iOS app: the root, or a conventional mobile folder. Only these
  *  are searched, so a folder that merely contains other repositories (say "Side Projects") does
@@ -75,6 +75,38 @@ export async function listSchemes(projectPath: string): Promise<string[]> {
   return parseSchemes(stdout)
 }
 
+/** Schemes whose `.xcscheme` builds an `.app`: the ones worth running. Looks in the workspace,
+ *  the projects it references (or sits beside) and each project's shared and user schemes.
+ *  Swift package schemes Xcode generates have no file, so they never count. */
+export async function listAppSchemes(projectPath: string): Promise<string[]> {
+  const projects = new Set<string>()
+  const containers = [projectPath]
+  if (projectPath.endsWith('.xcworkspace')) {
+    const data = await readFile(join(projectPath, 'contents.xcworkspacedata'), 'utf8').catch(() => '')
+    for (const [, location] of data.matchAll(/location\s*=\s*"(?:group|container):([^"]+\.xcodeproj)"/g)) {
+      projects.add(join(dirname(projectPath), location!))
+    }
+  } else {
+    projects.add(projectPath)
+  }
+  containers.push(...projects)
+  const schemeDirs: string[] = []
+  for (const container of containers) {
+    schemeDirs.push(join(container, 'xcshareddata', 'xcschemes'))
+    const users = await readdir(join(container, 'xcuserdata')).catch(() => [] as string[])
+    for (const user of users) schemeDirs.push(join(container, 'xcuserdata', user, 'xcschemes'))
+  }
+  const apps = new Set<string>()
+  for (const dir of schemeDirs) {
+    const files = await readdir(dir).catch(() => [] as string[])
+    for (const file of files.filter((f) => f.endsWith('.xcscheme'))) {
+      const xml = await readFile(join(dir, file), 'utf8').catch(() => '')
+      if (schemeBuildsApp(xml)) apps.add(file.replace(/\.xcscheme$/, ''))
+    }
+  }
+  return [...apps].sort()
+}
+
 export async function listDevices(): Promise<{ devices: Device[]; error?: string }> {
   const errors: string[] = []
   const simulators = exec('xcrun', ['simctl', 'list', 'devices', 'available', '-j'], {
@@ -126,6 +158,8 @@ export type RunRequest = {
   configuration: string
   destination: Destination
   statusFile: string
+  /** The build's full output; also gets the runner's own step lines. */
+  logFile: string
   openSimulatorApp: boolean
 }
 
@@ -142,25 +176,28 @@ export async function prepareRunCommand(request: RunRequest): Promise<string> {
     request.projectPath,
     request.scheme,
     request.configuration,
-    request.openSimulatorApp ? '1' : '0'
+    request.openSimulatorApp ? '1' : '0',
+    request.logFile
   ]
   return ['/bin/bash', script, ...args].map(shellQuote).join(' ')
 }
 
 /**
- * The runner. It writes its phase to the status file (one word, or `failed:<reason>`), which the
- * worker polls to drive the status bar, and prints the build and the app's console to the
- * terminal. Ctrl-C in the terminal stops the app and marks the run `stopped`.
+ * The runner. It writes its phase to the status file (one word, `failed:<reason>` or
+ * `crashed:<report path>`), which the worker polls to drive the status bar and the panel, keeps
+ * the build's output in the log file, and prints the build and the app's console to the terminal.
+ * Ctrl-C in the terminal stops the app and marks the run `stopped`.
  */
 export const RUN_SCRIPT = String.raw`#!/bin/bash
 # Mobile Launchpad iOS runner. Written by the Mobile Launchpad Orca plugin; rewritten on every run.
 set -o pipefail
 STATUS="$1"; KIND="$2"; UDID="$3"; CONTAINER_FLAG="$4"; CONTAINER="$5"
-SCHEME="$6"; CONFIG="$7"; OPEN_SIM="$8"
+SCHEME="$6"; CONFIG="$7"; OPEN_SIM="$8"; LOG="$9"
+: > "$LOG"
 
 status() { printf '%s\n' "$*" > "$STATUS"; }
-step() { printf '\n\033[1;36m▸ %s\033[0m\n' "$*"; }
-fail() { status "failed:$*"; printf '\n\033[1;31m✗ %s\033[0m\n' "$*"; exit 1; }
+step() { printf '\n\033[1;36m▸ %s\033[0m\n' "$*"; printf '▸ %s\n' "$*" >> "$LOG"; }
+fail() { printf '✗ %s\n' "$*" >> "$LOG"; status "failed:$*"; printf '\n\033[1;31m✗ %s\033[0m\n' "$*"; exit 1; }
 trap 'status stopped; printf "\n\033[33m■ Stopped\033[0m\n"; exit 130' INT TERM
 
 SIGNING=""
@@ -184,35 +221,49 @@ fi
 
 status building
 step "Building $SCHEME ($CONFIG)"
+# The log gets xcodebuild's raw output; the terminal gets it through xcbeautify when it runs.
 # A version-manager shim (mise, asdf) can exist without a working xcbeautify: run it to be sure.
 if xcbeautify --version > /dev/null 2>&1; then
-  xcb build 2>&1 | xcbeautify --disable-logging || fail "Build failed"
+  xcb build 2>&1 | tee -a "$LOG" | xcbeautify --disable-logging || fail "Build failed"
 else
-  xcb -quiet build || fail "Build failed"
+  xcb -quiet build 2>&1 | tee -a "$LOG" || fail "Build failed"
 fi
 
 PRODUCTS=$(xcb -showBuildSettings 2> /dev/null | awk -F ' = ' '/^ *TARGET_BUILD_DIR = /{print $2; exit}')
-[ -d "$PRODUCTS" ] || fail "Build products folder not found"
+[ -d "$PRODUCTS" ] || fail "Scheme $SCHEME builds no app (is it a library or package scheme?). Pick an app scheme under Build."
 APP="$PRODUCTS/$SCHEME.app"
 [ -d "$APP" ] || APP=$(ls -td "$PRODUCTS"/*.app 2> /dev/null | head -1)
-[ -d "$APP" ] || fail "No .app found in $PRODUCTS"
+[ -d "$APP" ] || fail "Scheme $SCHEME builds no .app in $PRODUCTS. Pick an app scheme under Build."
 BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" 2> /dev/null)
+EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist" 2> /dev/null)
 [ -n "$BUNDLE_ID" ] || fail "Could not read the bundle id of $APP"
 
 status installing
 step "Installing $(basename "$APP") ($BUNDLE_ID)"
+MARK="$LOG.launched"
 if [ "$KIND" = simulator ]; then
   xcrun simctl install "$UDID" "$APP" || fail "Could not install on the simulator"
   status launching
   step "Launching (Ctrl-C to stop)"
+  touch "$MARK"
   status running
   xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" || fail "Could not launch the app"
 else
   xcrun devicectl device install app --device "$UDID" "$APP" || fail "Could not install on the device"
   status launching
   step "Launching (Ctrl-C to stop)"
+  touch "$MARK"
   status running
   xcrun devicectl device process launch --device "$UDID" --terminate-existing --console "$BUNDLE_ID" || fail "Could not launch the app (is the iPhone locked?)"
+fi
+
+# The app's console ended: a crash on the simulator leaves a report on this Mac.
+sleep 1
+CRASH=$(find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -name "$EXECUTABLE-*.ips" -newer "$MARK" 2> /dev/null | sort | tail -1)
+if [ -n "$CRASH" ]; then
+  status "crashed:$CRASH"
+  printf '\n\033[1;31m💥 %s crashed\033[0m  %s\n' "$EXECUTABLE" "$CRASH"
+  exit 1
 fi
 status exited
 printf '\n\033[2m● The app exited\033[0m\n'
