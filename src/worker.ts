@@ -183,20 +183,29 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
   }
 
+  /** Orca refuses status bar text over 64 characters: shorten the middle (the device name). */
+  function fitStatusText(text: string): string {
+    const MAX = 64
+    if (text.length <= MAX) return text
+    return `${text.slice(0, MAX - 1)}…`
+  }
+
   async function updateStatusBar(s: LaunchpadState): Promise<void> {
     const elsewhere = s.otherRuns.filter((o) => isActive(o.run.phase)).length
-    const elsewhereText = elsewhere ? `${SPINNER[spinFrame]} ${elsewhere} building elsewhere` : ''
+    // Short: it is appended to the focused worktree's own text.
+    const elsewhereText = elsewhere ? `${SPINNER[spinFrame]} +${elsewhere} elsewhere` : ''
     if (!s.workspace || s.projects.length === 0) {
       // Nothing to run here, but keep showing builds that go on in other worktrees.
       await orca.host.call(
         'statusBar.update',
         elsewhere
-          ? { id: STATUS_ITEM, visible: true, text: elsewhereText, icon: 'hammer', tone: 'accent', tooltip: s.otherRuns.map((o) => `${o.run.scheme} · ${o.workspace.name}`).join('\n') }
+          ? { id: STATUS_ITEM, visible: true, text: `${SPINNER[spinFrame]} ${elsewhere} building elsewhere`, icon: 'hammer', tone: 'accent', tooltip: s.otherRuns.map((o) => `${o.run.scheme} · ${o.workspace.name}`).join('\n') }
           : { id: STATUS_ITEM, visible: false }
       )
       return
     }
-    const target = s.config.destination?.name ?? 'choose a destination'
+    // "Juanpe’s iPhone 18 Pro" → "iPhone 18 Pro": the owner's name costs status bar room.
+    const target = (s.config.destination?.name ?? 'choose a destination').replace(/^.*?[’']s\s+/, '')
     const scheme = s.config.scheme ?? s.projects[0]?.label.split('/').pop()?.replace(/\.\w+$/, '')
     const run = s.run
     const labels: Partial<Record<RunPhase, string>> = {
@@ -221,7 +230,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       item.text = `${item.text}  ·  ${elsewhereText}`
       item.tooltip = `${item.tooltip}\nAlso: ${s.otherRuns.map((o) => `${o.run.scheme} · ${o.workspace.name}`).join(', ')}`
     }
-    await orca.host.call('statusBar.update', { id: STATUS_ITEM, visible: true, ...item })
+    await orca.host.call('statusBar.update', { id: STATUS_ITEM, visible: true, ...item, text: fitStatusText(item.text) })
   }
 
   // Focus changes are serialized: the first workspace.changed and a panel's state.get arrive

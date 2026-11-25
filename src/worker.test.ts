@@ -180,6 +180,7 @@ test('a run keeps showing, and the status bar says so, after switching worktree'
     const bar = host.callsOf('statusBar.update').at(-1) as { visible: boolean; text: string }
     assert.equal(bar.visible, true)
     assert.match(bar.text, /1 building elsewhere/)
+    assert.ok(bar.text.length <= 64)
     await worker.request('stop', { path: root })
     assert.deepEqual((await worker.request('state.get')).otherRuns, [])
     await worker.deactivate()
